@@ -1,5 +1,5 @@
 # Sử dụng một ảnh nền Python 3.10 gọn nhẹ
-FROM python:3.10-slim
+FROM python:3.10
 
 # Cài đặt tất cả các gói hệ thống cần thiết và dọn dẹp cache
 # --no-install-recommends giúp giảm kích thước image cuối cùng
