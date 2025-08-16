@@ -6,13 +6,12 @@ import os
 import re
 import requests
 import io
-import pytesseract # Vẫn giữ lại cho cấu hình Tesseract ban đầu, nhưng sẽ không được dùng trực tiếp cho OCR nữa
+import base64
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from dotenv import load_dotenv
 import threading
 from flask import Flask
 import asyncio
-import base64 # Thêm thư viện base64 để mã hóa ảnh
 
 # --- PHẦN 1: CẤU HÌNH WEB SERVER ---
 app = Flask(__name__)
@@ -28,8 +27,12 @@ def run_web_server():
     app.run(host='0.0.0.0', port=port)
 
 # --- PHẦN 2: CẤU HÌNH VÀ CÁC HÀM CỦA BOT DISCORD ---
-load_dotenv()
+load_dotenv() # Tải các biến môi trường từ tệp .env
+
+# Lấy TOKEN và API KEY từ file .env
 TOKEN = os.getenv('DISCORD_TOKEN')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY') # <<< THAY ĐỔI QUAN TRỌNG
+
 KARUTA_ID = 646937666251915264
 NEW_CHARACTERS_FILE = "new_characters.txt"
 HEART_DATABASE_FILE = "tennhanvatvasotim.txt"
@@ -88,12 +91,17 @@ async def get_names_from_image_via_gemini_api(image_bytes):
     Sử dụng Gemini API để nhận diện tên nhân vật từ ảnh.
     Trả về danh sách tên nhân vật.
     """
+    # <<< THAY ĐỔI QUAN TRỌNG: Kiểm tra xem API Key có tồn tại không
+    if not GEMINI_API_KEY:
+        print("  [LỖI API] Biến môi trường GEMINI_API_KEY chưa được thiết lập.")
+        return ["Lỗi API (Key)", "Lỗi API (Key)", "Lỗi API (Key)"]
+        
     try:
         # Mã hóa ảnh sang Base64
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
 
         # Định nghĩa prompt để hỏi AI về tên nhân vật
-        prompt = "Từ hình ảnh thẻ bài Karuta này, hãy trích xuất và liệt kê tên các nhân vật theo thứ tự từ trái sang phải. Nếu có thể, hãy ghi cả tên của người cha của Tsukasa nếu không phải chỉ là 'Tsukasa's Father'. Chỉ trả về tên, mỗi tên trên một dòng."
+        prompt = "Từ hình ảnh thẻ bài Karuta này, hãy trích xuất và liệt kê tên các nhân vật theo thứ tự từ trái sang phải. Chỉ trả về tên, mỗi tên trên một dòng."
 
         # Cấu trúc payload cho Gemini API
         payload = {
@@ -113,9 +121,9 @@ async def get_names_from_image_via_gemini_api(image_bytes):
             ]
         }
         
-        # Cấu hình API key và URL
-        apiKey = "" 
-        apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=" + apiKey
+        # Cấu hình URL với API Key đã được tải từ .env
+        apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + GEMINI_API_KEY # <<< THAY ĐỔI QUAN TRỌNG
+        # Đã cập nhật lên model gemini-1.5-flash mới hơn và ổn định hơn
 
         print("  [API] Đang gửi ảnh đến Gemini API để nhận dạng...")
         
@@ -127,23 +135,14 @@ async def get_names_from_image_via_gemini_api(image_bytes):
         
         # Phân tích phản hồi từ API
         if result and result.get('candidates') and result['candidates'][0].get('content') and result['candidates'][0]['content'].get('parts'):
-            # Lấy văn bản phản hồi từ AI
             api_text = result['candidates'][0]['content']['parts'][0]['text']
-            
-            # Tách tên nhân vật từ phản hồi (mỗi tên trên một dòng)
             names = [name.strip() for name in api_text.split('\n') if name.strip()]
             
-            # Hậu xử lý nhỏ (có thể thêm nhiều quy tắc nếu AI vẫn trả về sai)
+            # Hậu xử lý nhỏ (loại bỏ ký tự không cần thiết)
             processed_names = []
             for name in names:
-                # Loại bỏ các ký tự không phải chữ cái, số, khoảng trắng, ', -, .
                 cleaned = re.sub(r'[^a-zA-Z0-9\s\'-.]', '', name)
-                # Xử lý khoảng trắng thừa
                 cleaned = ' '.join(cleaned.split())
-                # Chuyển đổi tên để xử lý một số lỗi phổ biến nếu có
-                # Ví dụ: nếu AI trả về "Tsukasa's Father" mà bạn muốn "Tsukasa no Chichi"
-                # if cleaned == "Tsukasa's Father":
-                #     cleaned = "Tsukasa no Chichi"
                 processed_names.append(cleaned)
 
             print(f"  [API] Nhận dạng từ Gemini API: {processed_names}")
@@ -154,21 +153,16 @@ async def get_names_from_image_via_gemini_api(image_bytes):
 
     except requests.exceptions.RequestException as e:
         print(f"  [LỖI API] Lỗi khi gọi Gemini API: {e}")
-        return ["Lỗi API (Thẻ 1)", "Lỗi API (Thẻ 2)", "Lỗi API (Thẻ 3)"]
+        return ["Lỗi API (Request)", "Lỗi API (Request)", "Lỗi API (Request)"]
     except Exception as e:
         print(f"  [LỖI API] Đã xảy ra lỗi không xác định khi xử lý API: {e}")
-        return ["Lỗi API (Thẻ 1)", "Lỗi API (Thẻ 2)", "Lỗi API (Thẻ 3)"]
+        return ["Lỗi API (Unknown)", "Lỗi API (Unknown)", "Lỗi API (Unknown)"]
 
-
-async def get_names_from_image_upgraded(image_bytes): # <<< Đã thêm 'async' vào đây
+async def get_names_from_image_upgraded(image_bytes):
     """
-    Hàm đọc ảnh được nâng cấp.
-    Đã được thay đổi để sử dụng Gemini API thay vì Tesseract cục bộ.
+    Hàm đọc ảnh được nâng cấp, sử dụng Gemini API.
     """
-    # Gọi hàm sử dụng Gemini API
-    # >>> Đã thay đổi asyncio.run() thành await <<<
     return await get_names_from_image_via_gemini_api(image_bytes)
-
 
 # --- PHẦN CHÍNH CỦA BOT ---
 intents = discord.Intents.default()
@@ -204,24 +198,21 @@ async def on_message(message):
     print("\n" + "="*40)
     print(f"🔎 [LOG] Phát hiện ảnh drop từ KARUTA. Bắt đầu xử lý...")
     print(f"  - URL ảnh: {attachment.url}")
-    print(f"  - Kích thước ảnh dự kiến: {attachment.width}x{attachment.height}")
 
     try:
         response = requests.get(attachment.url)
         response.raise_for_status()
         image_bytes = response.content
 
-        # Gọi hàm xử lý ảnh nâng cấp (hiện tại sử dụng Gemini API)
-        # >>> Đã thêm 'await' vào đây <<<
+        # Gọi hàm xử lý ảnh nâng cấp
         character_names = await get_names_from_image_upgraded(image_bytes)
         
         print(f"  -> Kết quả nhận dạng tên: {character_names}")
 
-        if not character_names or all(name == "Không đọc được" or name.startswith("Lỗi OCR") or name.startswith("Lỗi API") for name in character_names):
-            print("  -> Không nhận dạng được tên nào hoặc có lỗi nhận dạng. Bỏ qua.")
+        if not character_names or any(name.startswith("Lỗi API") for name in character_names):
+            print("  -> Lỗi API hoặc không nhận dạng được tên. Bỏ qua.")
             print("="*40 + "\n")
-            if all(name == "Không đọc được" or name.startswith("Lỗi OCR") or name.startswith("Lỗi API") for name in character_names):
-                 await message.reply("Xin lỗi, tôi không thể đọc được tên nhân vật từ ảnh này. Vui lòng thử lại với ảnh rõ hơn hoặc báo cáo lỗi nếu vấn đề tiếp diễn.")
+            await message.reply("Xin lỗi, tôi không thể đọc được tên nhân vật từ ảnh này. Vui lòng thử lại với ảnh rõ hơn hoặc báo cáo lỗi nếu vấn đề tiếp diễn.")
             return
 
         async with message.channel.typing():
@@ -229,10 +220,10 @@ async def on_message(message):
 
             reply_lines = []
             for i, name in enumerate(character_names):
-                display_name = name if name and not name.startswith("Lỗi OCR") and not name.startswith("Lỗi API") else "Không đọc được"
-                lookup_name = name.lower().strip() if name and not name.startswith("Lỗi OCR") and not name.startswith("Lỗi API") else ""
+                display_name = name if name else "Không đọc được"
+                lookup_name = name.lower().strip() if name else ""
                 
-                if lookup_name and lookup_name not in HEART_DATABASE and lookup_name != "không đọc được":
+                if lookup_name and lookup_name not in HEART_DATABASE:
                     log_new_character(name)
 
                 heart_value = HEART_DATABASE.get(lookup_name, 0)
@@ -256,17 +247,15 @@ async def on_message(message):
 
 # --- PHẦN KHỞI ĐỘNG ---
 if __name__ == "__main__":
-    # Lưu ý: Nếu Tesseract không nằm trong PATH, bạn cần thêm dòng sau:
-    # pytesseract.pytesseract.tesseract_cmd = r'C:\\Program Files\\Tesseract-OCR\\tesseract.exe'
-    # hoặc đường dẫn đến file tesseract.exe trên hệ thống của bạn.
-    
-    # Do hiện tại đang dùng Gemini API, nên Tesseract.pytesseract.tesseract_cmd không còn cần thiết
-    # trừ khi bạn muốn fallback về Tesseract khi API lỗi.
-
-    if TOKEN:
+    # <<< THAY ĐỔI QUAN TRỌNG: Kiểm tra cả TOKEN và GEMINI_API_KEY trước khi chạy
+    if TOKEN and GEMINI_API_KEY:
+        print("✅ Đã tìm thấy DISCORD_TOKEN và GEMINI_API_KEY.")
         bot_thread = threading.Thread(target=bot.run, args=(TOKEN,))
         bot_thread.start()
         print("🚀 Khởi động Web Server để giữ bot hoạt động...")
         run_web_server()
     else:
-        print("LỖI: Không tìm thấy DISCORD_TOKEN trong tệp .env. Vui lòng tạo file .env và thêm TOKEN của bot.")
+        if not TOKEN:
+            print("❌ LỖI: Không tìm thấy DISCORD_TOKEN trong tệp .env. Vui lòng thêm TOKEN của bot vào tệp .env.")
+        if not GEMINI_API_KEY:
+            print("❌ LỖI: Không tìm thấy GEMINI_API_KEY trong tệp .env. Vui lòng thêm key của Gemini API vào tệp .env.")
