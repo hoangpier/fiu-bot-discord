@@ -1,4 +1,4 @@
-# main.py (Phiên bản OCR Tại Chỗ - Tọa độ từ docanh.py)
+# main.py (Phiên bản OCR Tại Chỗ - Sử dụng PIL + Tesseract)
 
 import discord
 from discord.ext import commands
@@ -30,18 +30,23 @@ def run_web_server():
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 
-# Cấu hình Tesseract nếu cần
+# <<< BỎ: Không cần GEMINI_API_KEY nữa >>>
+# <<< THÊM: Cấu hình Tesseract nếu cần >>>
+# Ví dụ trên Windows:
 # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 KARUTA_ID = 646937666251915264
 NEW_CHARACTERS_FILE = "new_characters.txt"
 HEART_DATABASE_FILE = "tennhanvatvasotim.txt"
 
+# <<< BỎ: Không cần cơ chế Cooldown cho OCR tại chỗ >>>
+
 def load_heart_data(file_path):
-    # ... (Nội dung hàm giữ nguyên)
+    """Tải dữ liệu số tim của nhân vật từ một file."""
     heart_db = {}
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
+            # ... (Nội dung hàm giữ nguyên)
             for line in f:
                 line = line.strip()
                 if not line.startswith('♡') or not line: continue
@@ -55,12 +60,14 @@ def load_heart_data(file_path):
                     except (ValueError, IndexError): continue
     except FileNotFoundError:
         print(f"LỖI: Không tìm thấy tệp dữ liệu '{file_path}'.")
+    # ...
     print(f"✅ Đã tải thành công {len(heart_db)} nhân vật vào cơ sở dữ liệu số tim.")
     return heart_db
 
 HEART_DATABASE = load_heart_data(HEART_DATABASE_FILE)
 
 def log_new_character(character_name):
+    """Ghi lại tên nhân vật mới."""
     # ... (Nội dung hàm giữ nguyên)
     try:
         existing_names = set()
@@ -74,53 +81,44 @@ def log_new_character(character_name):
     except Exception as e:
         print(f"Lỗi khi đang lưu nhân vật mới: {e}")
 
-# <<< THAY THẾ HOÀN TOÀN: Hàm xử lý ảnh với logic và tọa độ từ docanh.py >>>
+# <<< THAY THẾ HOÀN TOÀN: Hàm xử lý ảnh mới sử dụng PIL và Tesseract >>>
 async def get_names_from_image_ocr(image_bytes):
     """
     Sử dụng PIL để cắt ảnh và Tesseract để đọc chữ.
-    Logic và tọa độ được chuyển từ file docanh.py.
+    Logic dựa trên file docanh.py.
     """
     try:
         img = Image.open(io.BytesIO(image_bytes))
         width, height = img.size
         
-        card_count = 0
-        card_width, card_height = 278, 248
-
-        # Logic phát hiện số thẻ từ docanh.py
-        if width >= 834 and height >= 248 and height < 300: # Drop 3 thẻ
-            card_count = 3
-        elif width >= 834 and height >= 330 and height < 400: # Drop 4 thẻ
-            card_count = 4
-        else:
-            print(f"Kích thước ảnh không được hỗ trợ: {width}x{height}")
+        # Giả sử kích thước ảnh drop 3 thẻ là 836x312
+        if width < 830 or height < 300:
+            print(f"  [OCR] Kích thước ảnh không phù hợp ({width}x{height}), bỏ qua.")
             return []
 
-        print(f"  [OCR] Phát hiện {card_count} thẻ trong ảnh.")
-
-        # Tọa độ từ docanh.py
-        x_coords = [0, 279, 558, 0]
+        # Tọa độ và kích thước cố định cho mỗi thẻ
+        card_width = 278
+        card_height = 248
+        x_coords = [0, 279, 558] # Tọa độ x bắt đầu của mỗi thẻ
+        y_offset = 32            # Tọa độ y bắt đầu của các thẻ
 
         processed_data = []
 
-        for i in range(card_count):
-            # Logic tọa độ y từ docanh.py
-            y_offset = 0 if i < 3 else card_height + 2
-
-            # Tọa độ vùng cắt thẻ
+        for i in range(3): # Xử lý 3 thẻ
+            # Cắt ảnh thẻ
             box = (x_coords[i], y_offset, x_coords[i] + card_width, y_offset + card_height)
             card_img = img.crop(box)
 
-            # Tọa độ vùng tên nhân vật từ docanh.py
-            top_box = (15, 15, card_width - 15, 50)
+            # Cắt lấy vùng tên nhân vật
+            top_box = (20, 20, card_width - 20, 60)
             top_img = card_img.crop(top_box)
             
-            # Giữ nguyên tọa độ vùng mã số (vì docanh.py không có)
+            # Cắt lấy vùng mã số
             print_box = (100, card_height - 30, card_width - 20, card_height - 10)
             print_img = card_img.crop(print_box)
 
             # Đọc chữ bằng Tesseract
-            char_name_config = r"--psm 6 --oem 3"
+            char_name_config = r"--psm 7 --oem 3"
             print_num_config = r"--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789"
 
             char_name = pytesseract.image_to_string(top_img, config=char_name_config).strip().replace("\n", " ")
@@ -149,8 +147,13 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
+    """Sự kiện xử lý mỗi khi có tin nhắn mới."""
+    # <<< BỎ: Không cần biến global last_api_call_time >>>
+
     if not (message.author.id == KARUTA_ID and message.attachments):
         return
+
+    # <<< BỎ: Toàn bộ logic kiểm tra Cooldown >>>
     
     attachment = message.attachments[0]
     if not attachment.content_type.startswith('image/'):
@@ -165,6 +168,7 @@ async def on_message(message):
         response.raise_for_status()
         image_bytes = response.content
 
+        # <<< THAY ĐỔI: Gọi hàm OCR mới >>>
         character_data = await get_names_from_image_ocr(image_bytes)
         
         print(f"  -> Kết quả nhận dạng cuối cùng: {character_data}")
@@ -199,6 +203,7 @@ async def on_message(message):
 
 # --- PHẦN KHỞI ĐỘNG ---
 if __name__ == "__main__":
+    # <<< THAY ĐỔI: Chỉ cần kiểm tra TOKEN >>>
     if TOKEN:
         print("✅ Đã tìm thấy DISCORD_TOKEN.")
         bot_thread = threading.Thread(target=bot.run, args=(TOKEN,))
