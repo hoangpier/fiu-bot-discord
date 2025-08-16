@@ -1,14 +1,18 @@
-# main.py (Phiên bản v3 - Thám tử Embed)
+# main.py (Phiên bản v4 - Hybrid - Đọc được mọi loại Embed)
 
 import discord
 from discord.ext import commands
 import os
 import re
+import requests
+import io
+from PIL import Image
 from dotenv import load_dotenv
 import threading
 from flask import Flask
+import pytesseract
 
-# --- PHẦN 1: CẤU HÌNH WEB SERVER (Giữ nguyên) ---
+# --- PHẦN 1: CẤU HÌNH WEB SERVER ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -22,6 +26,10 @@ def run_web_server():
 # --- PHẦN 2: CẤU HÌNH VÀ CÁC HÀM CỦA BOT DISCORD ---
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
+
+# QUAN TRỌNG: Cấu hình Tesseract nếu cần thiết cho môi trường của bạn
+# Ví dụ trên Windows:
+# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 KARUTA_ID = 646937666251915264
 NEW_CHARACTERS_FILE = "new_characters.txt"
@@ -63,6 +71,34 @@ def log_new_character(character_name):
     except Exception as e:
         print(f"Lỗi khi đang lưu nhân vật mới: {e}")
 
+async def get_names_from_image_ocr(image_bytes):
+    """Hàm OCR để đọc tên và mã số từ hình ảnh thẻ bài."""
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        width, height = img.size
+        if width < 830 or height < 300: return []
+
+        card_width, card_height = 278, 248
+        x_coords, y_offset = [0, 279, 558], 32
+        processed_data = []
+
+        for i in range(3):
+            box = (x_coords[i], y_offset, x_coords[i] + card_width, y_offset + card_height)
+            card_img = img.crop(box)
+            top_box = (20, 20, card_width - 20, 60)
+            print_box = (100, card_height - 30, card_width - 20, card_height - 10)
+            
+            char_name = pytesseract.image_to_string(card_img.crop(top_box), config=r"--psm 7 --oem 3").strip().replace("\n", " ")
+            print_number = pytesseract.image_to_string(card_img.crop(print_box), config=r"--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789").strip()
+            
+            if char_name:
+                processed_data.append((char_name, print_number or "???"))
+        
+        return processed_data
+    except Exception as e:
+        print(f"  [LỖI OCR] Đã xảy ra lỗi khi xử lý ảnh: {e}")
+        return []
+
 # --- PHẦN CHÍNH CỦA BOT ---
 intents = discord.Intents.default()
 intents.message_content = True
@@ -71,7 +107,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @bot.event
 async def on_ready():
     print(f'✅ Bot Discord đã đăng nhập với tên {bot.user}')
-    print('Bot đang chạy với bộ xử lý Thám tử Embed v3.')
+    print('Bot đang chạy với phiên bản Hybrid v4 mạnh mẽ nhất.')
 
 @bot.event
 async def on_message(message):
@@ -80,11 +116,12 @@ async def on_message(message):
 
     try:
         embed = message.embeds[0]
-        
+        character_data = []
         print("\n" + "="*40)
-        print(f"🔎 [LOG] Phát hiện embed từ KARUTA. Khởi động chế độ thám tử...")
+        print("🔎 [LOG] Bắt đầu xử lý embed Karuta với phương pháp Hybrid...")
 
-        # --- BƯỚC 1: GOM TẤT CẢ TEXT TỪ MỌI NGÓC NGÁCH ---
+        # --- ƯU TIÊN 1: ĐỌC TEXT (PHƯƠNG PHÁP THÁM TỬ) ---
+        print("  -> Bước 1: Cố gắng đọc dữ liệu text (cách nhanh)...")
         text_sources = []
         if embed.title: text_sources.append(embed.title)
         if embed.description: text_sources.append(embed.description)
@@ -94,31 +131,34 @@ async def on_message(message):
             if field.name: text_sources.append(field.name)
             if field.value: text_sources.append(field.value)
         
-        # --- BƯỚC 2: KẾT HỢP VÀ "RỬA" SẠCH TEXT ---
-        full_text_content = "\n".join(text_sources)
-        # Loại bỏ ký tự không chiều rộng (zero-width space), một cách phổ biến để ẩn text
-        cleaned_text = full_text_content.replace('\u200b', '')
-
-        # Dùng print để debug, xem bot thực sự "đọc" được gì
-        print(f"  [DEBUG] Nội dung text thô bot đọc được:\n---\n{cleaned_text}\n---")
-
-        # --- BƯỚC 3: TRÍCH XUẤT DỮ LIỆU BẰNG REGEX ---
-        # Mẫu regex này tìm cặp `Print` và `Tên nhân vật`
+        cleaned_text = "\n".join(text_sources).replace('\u200b', '')
         pattern = r"`#(\d+)`.*· `(.*?)`"
         matches = re.findall(pattern, cleaned_text)
         
-        character_data = []
         if matches:
             character_data = [(name, print_num) for print_num, name in matches]
+            print("  ✅ Thành công! Đã tìm thấy dữ liệu text.")
 
+        # --- ƯU TIÊN 2: DỰ PHÒNG BẰNG OCR (NẾU ĐỌC TEXT THẤT BẠI) ---
+        if not character_data and embed.image.url:
+            print("  ⚠️ Không tìm thấy text. Chuyển sang phương án dự phòng OCR (cách chậm)...")
+            try:
+                response = requests.get(embed.image.url)
+                response.raise_for_status()
+                image_bytes = response.content
+                character_data = await get_names_from_image_ocr(image_bytes)
+                if character_data: print("  ✅ Thành công! OCR đã nhận dạng được thẻ.")
+                else: print("  ❌ OCR không nhận dạng được dữ liệu từ ảnh.")
+            except Exception as ocr_error:
+                print(f"  ❌ Lỗi trong quá trình OCR: {ocr_error}")
+
+        # --- GỬI PHẢN HỒI (NẾU CÓ DỮ LIỆU) ---
         if not character_data:
-            print("  -> Đã quét toàn bộ embed nhưng không tìm thấy dữ liệu hợp lệ. Bỏ qua.")
+            print("  -> Thất bại: Không thể trích xuất dữ liệu bằng cả hai phương pháp. Bỏ qua.")
             print("="*40 + "\n")
             return
-        
-        print(f"  -> Trích xuất thành công: {character_data}")
 
-        # Gửi phản hồi (giữ nguyên như cũ)
+        print(f"  -> Dữ liệu cuối cùng: {character_data}")
         async with message.channel.typing():
             reply_lines = []
             for i, (name, print_number) in enumerate(character_data):
@@ -133,8 +173,7 @@ async def on_message(message):
             print("✅ ĐÃ GỬI PHẢN HỒI THÀNH CÔNG")
 
     except Exception as e:
-        print(f"  [LỖI] Đã xảy ra lỗi không xác định khi xử lý embed: {e}")
-    
+        print(f"  [LỖI] Đã xảy ra lỗi không xác định: {e}")
     print("="*40 + "\n")
 
 # --- PHẦN KHỞI ĐỘNG ---
@@ -147,4 +186,3 @@ if __name__ == "__main__":
         run_web_server()
     else:
         print("❌ LỖI: Không tìm thấy DISCORD_TOKEN trong tệp .env.")
-
