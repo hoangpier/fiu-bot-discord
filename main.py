@@ -6,7 +6,7 @@ import re
 import requests
 import io
 import pytesseract
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageOps
 from dotenv import load_dotenv
 import threading
 from flask import Flask
@@ -67,45 +67,56 @@ def log_new_character(character_name):
 
 def get_names_from_image_upgraded(image_bytes):
     """
-    Hàm đọc ảnh được nâng cấp với kỹ thuật cắt ảnh và xử lý ảnh tiên tiến hơn.
+    Hàm đọc ảnh phiên bản HOÀN THIỆN:
+    1. Tự động xóa viền đen (padding).
+    2. Xử lý được cả nền sáng và tối.
+    3. Vùng cắt tên nhân vật chính xác.
     """
     try:
-        main_image = Image.open(io.BytesIO(image_bytes))
+        main_image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+
+        # --- BƯỚC NÂNG CẤP QUAN TRỌNG: TỰ ĐỘNG XÓA VIỀN ĐEN ---
+        # Lấy bounding box của nội dung ảnh (loại bỏ viền đen)
+        bbox = main_image.getbbox()
+        if bbox:
+            main_image = main_image.crop(bbox)
+        # -----------------------------------------------------------
+
+        # Lấy lại kích thước sau khi đã cắt viền
         width, height = main_image.size
 
+        # Kiểm tra lại kích thước sau khi cắt viền để chắc chắn nó là ảnh drop
         if not (width > 800 and height > 200):
-            print(f"  [LOG] Kích thước ảnh không giống ảnh drop: {width}x{height}")
+            print(f"  [LOG] Kích thước ảnh sau khi xóa viền không hợp lệ: {width}x{height}")
             return []
 
-        card_width = 278
-        card_height = 248
+        card_width = 278 # Chiều rộng mỗi thẻ vẫn không đổi
         x_coords = [0, 279, 558]
 
         extracted_names = []
         custom_config = r'--psm 7 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 '
 
         for i in range(3):
-            card_box = (x_coords[i], 0, x_coords[i] + card_width, card_height)
+            # Cắt thẻ bài từ ảnh đã được xóa viền
+            card_box = (x_coords[i], 0, x_coords[i] + card_width, height) # Dùng height mới
             card_img = main_image.crop(card_box)
 
-            name_box = (15, 15, card_width - 15, 60)
+            # Vùng cắt tên nhân vật đã được thu hẹp
+            name_box = (15, 15, card_width - 15, 45)
             name_img = card_img.crop(name_box)
 
-            # --- PHẦN NÂNG CẤP ---
-            # 1. Chuyển sang ảnh xám
+            # Logic xử lý ảnh (đảo màu) để đọc chữ trắng trên mọi loại nền
             name_img = name_img.convert('L')
-            # 2. Tăng độ tương phản
+            name_img = ImageOps.invert(name_img)
             enhancer = ImageEnhance.Contrast(name_img)
-            name_img = enhancer.enhance(2.5)
-            # 3. Lọc đen trắng (Thresholding) - Giúp loại bỏ nền nhiễu
-            threshold = 120 # Bạn có thể thử thay đổi giá trị này, từ 100 đến 150
-            name_img = name_img.point(lambda p: 255 if p > threshold else 0)
-            # --------------------
+            name_img = enhancer.enhance(2.0)
+            threshold = 80
+            name_img = name_img.point(lambda p: 0 if p < threshold else 255)
 
             text = pytesseract.image_to_string(name_img, config=custom_config)
             cleaned_name = text.strip().replace("\n", " ")
-            
-            if len(cleaned_name) > 2: # Tăng yêu cầu độ dài tên để lọc rác tốt hơn
+
+            if len(cleaned_name) > 2:
                 extracted_names.append(cleaned_name)
             else:
                 extracted_names.append("")
@@ -200,3 +211,4 @@ if __name__ == "__main__":
         run_web_server()
     else:
         print("LỖI: Không tìm thấy DISCORD_TOKEN trong tệp .env.")
+
