@@ -1,4 +1,4 @@
-# main.py (Phiên bản Chẩn đoán Chi tiết)
+# main.py (Phiên bản cuối cùng - Sửa lỗi Embed)
 import discord
 from discord.ext import commands
 import os
@@ -26,7 +26,6 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 KARUTA_ID = 646937666251915264
 NEW_CHARACTERS_FILE = "new_characters.txt"
 
-# ... (Toàn bộ các hàm load_heart_data, log_new_character, và xử lý ảnh giữ nguyên như cũ)
 def load_heart_data(file_path):
     heart_db = {}
     try:
@@ -60,15 +59,9 @@ def log_new_character(character_name):
         if character_name and character_name.lower() not in existing_names:
             with open(NEW_CHARACTERS_FILE, 'a', encoding='utf-8') as f:
                 f.write(f"{character_name}\n")
-            print(f"  [CHẨN ĐOÁN] ⭐ Đã lưu '{character_name}' vào file {NEW_CHARACTERS_FILE}")
+            print(f"⭐ Đã phát hiện và lưu nhân vật mới: {character_name}")
     except Exception as e:
         print(f"Lỗi khi đang lưu nhân vật mới: {e}")
-
-def preprocess_image_for_ocr(image_obj):
-    img = image_obj.convert('L')
-    enhancer = ImageEnhance.Contrast(img)
-    img = enhancer.enhance(2.0)
-    return img
 
 def get_names_from_image(image_url):
     try:
@@ -82,14 +75,14 @@ def get_names_from_image(image_url):
             left, right = i * card_width, (i + 1) * card_width
             card_image = main_image.crop((left, 0, right, img_height))
             name_region = card_image.crop((20, 30, card_width - 40, 100))
-            processed_region = preprocess_image_for_ocr(name_region)
+            processed_region = ImageEnhance.Contrast(card_image.convert('L')).enhance(2.0)
             custom_config = r'--oem 3 --psm 6'
             text = pytesseract.image_to_string(processed_region, config=custom_config)
             cleaned_name = text.split('\n')[0].strip()
             extracted_names.append(cleaned_name)
         return extracted_names
     except Exception as e:
-        print(f"  [CHẨN ĐOÁN] Lỗi trong quá trình xử lý ảnh: {e}")
+        print(f"Lỗi trong quá trình xử lý ảnh: {e}")
         return []
 
 def get_names_from_embed_fields(embed):
@@ -101,77 +94,65 @@ def get_names_from_embed_fields(embed):
                 extracted_names.append(match.group(1).strip())
         return extracted_names
     except Exception as e:
-        print(f"  [CHẨN ĐOÁN] Lỗi khi xử lý embed fields: {e}")
+        print(f"Lỗi khi xử lý embed fields: {e}")
         return []
 
-# --- PHẦN CHÍNH CỦA BOT ---
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-@bot.command()
-async def ping(ctx):
-    await ctx.send("Pong!")
+async def process_karuta_drop(message):
+    """Hàm xử lý logic chung cho cả tin nhắn mới và tin nhắn được sửa."""
+    embed = message.embeds[0]
+    character_names = []
+    print(f"🔎 Phát hiện drop từ Karuta. Bắt đầu xử lý...")
+
+    if embed.image and embed.image.url:
+        print("  -> Đây là Drop dạng Ảnh. Sử dụng OCR...")
+        character_names = get_names_from_image(embed.image.url)
+    elif embed.fields:
+        print("  -> Đây là Drop dạng Chữ/Embed. Đọc dữ liệu fields...")
+        character_names = get_names_from_embed_fields(embed)
+
+    while len(character_names) < 3:
+        character_names.append("")
+
+    print(f"  Nhận dạng các tên: {character_names}")
+
+    async with message.channel.typing():
+        reply_lines = []
+        for i in range(3):
+            name = character_names[i]
+            display_name = name if name else "Không đọc được"
+            lookup_name = name.lower().strip() if name else ""
+            if lookup_name and lookup_name not in HEART_DATABASE:
+                log_new_character(name)
+            heart_value = HEART_DATABASE.get(lookup_name, 0)
+            heart_display = f"{heart_value:,}" if heart_value > 0 else "N/A"
+            reply_lines.append(f"{i+1} | ♡**{heart_display}** · `{display_name}`")
+        reply_content = "\n".join(reply_lines)
+        await message.reply(reply_content)
+        print("✅ Đã gửi phản hồi thành công.")
 
 @bot.event
 async def on_ready():
     print(f'✅ Bot Discord đã đăng nhập với tên {bot.user}')
-    print('Bot đang chạy ở chế độ chẩn đoán.')
 
 @bot.event
 async def on_message(message):
-    await bot.process_commands(message)
-    if message.author == bot.user:
-        return
+    if message.author.id == KARUTA_ID and "dropping" in message.content and message.embeds:
+        await process_karuta_drop(message)
 
-    # In ra tất cả tin nhắn bot thấy để chẩn đoán
-    print(f"[LOG] Thấy tin nhắn từ '{message.author.name}': '{message.content}'")
+# <<< THÊM SỰ KIỆN LẮNG NGHE TIN NHẮN ĐƯỢC CẬP NHẬT >>>
+@bot.event
+async def on_message_edit(before, after):
+    # 'after' là tin nhắn sau khi đã được cập nhật (đã có embed)
+    if after.author.id == KARUTA_ID and "dropping" in after.content and after.embeds:
+        # Kiểm tra xem tin nhắn trước đó có embed không, nếu có rồi thì bỏ qua để tránh trả lời 2 lần
+        if not before.embeds:
+            await process_karuta_drop(after)
 
-    if message.author.id == KARUTA_ID:
-        # Báo cáo chi tiết về tin nhắn của Karuta
-        print("\n" + "="*40)
-        print("🔎 [CHẨN ĐOÁN] ĐÃ PHÁT HIỆN TIN NHẮN TỪ KARUTA")
-        print(f"  - Nội dung tin nhắn: '{message.content}'")
-        print(f"  - Có chứa 'dropping' không?: {'dropping' in message.content}")
-        print(f"  - Có embeds không?: {bool(message.embeds)}")
-        
-        if "dropping" in message.content and message.embeds:
-            print("  -> ĐỦ ĐIỀU KIỆN, BẮT ĐẦU XỬ LÝ DROP...")
-            embed = message.embeds[0]
-            character_names = []
-
-            if embed.image and embed.image.url:
-                print("    -> Đây là Drop dạng Ảnh. Sử dụng OCR...")
-                character_names = get_names_from_image(embed.image.url)
-            elif embed.fields:
-                print("    -> Đây là Drop dạng Chữ/Embed. Đọc dữ liệu fields...")
-                character_names = get_names_from_embed_fields(embed)
-
-            while len(character_names) < 3:
-                character_names.append("")
-
-            print(f"    -> Kết quả nhận dạng tên: {character_names}")
-
-            async with message.channel.typing():
-                reply_lines = []
-                for i in range(3):
-                    name = character_names[i]
-                    display_name = name if name else "Không đọc được"
-                    lookup_name = name.lower().strip() if name else ""
-                    if lookup_name and lookup_name not in HEART_DATABASE:
-                        log_new_character(name)
-                    heart_value = HEART_DATABASE.get(lookup_name, 0)
-                    heart_display = f"{heart_value:,}" if heart_value > 0 else "N/A"
-                    reply_lines.append(f"{i+1} | ♡**{heart_display}** · `{display_name}`")
-                reply_content = "\n".join(reply_lines)
-                await message.reply(reply_content)
-                print("✅ ĐÃ GỬI PHẢN HỒI THÀNH CÔNG")
-        else:
-            print("  -> KHÔNG ĐỦ ĐIỀU KIỆN. BỎ QUA.")
-        print("="*40 + "\n")
-
-
-# --- PHẦN KHỞI ĐỘNG ---
+# --- PHẦN 3: KHỞI ĐỘNG BOT VÀ WEB SERVER ---
 if __name__ == "__main__":
     if TOKEN:
         bot_thread = threading.Thread(target=bot.run, args=(TOKEN,))
