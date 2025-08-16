@@ -1,4 +1,4 @@
-# main.py (Phiên bản cuối cùng - Sửa lỗi Embed)
+# main.py (Phiên bản Chẩn đoán Sâu)
 import discord
 from discord.ext import commands
 import os
@@ -26,6 +26,7 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 KARUTA_ID = 646937666251915264
 NEW_CHARACTERS_FILE = "new_characters.txt"
 
+# ... (Toàn bộ các hàm load_heart_data, log_new_character, và xử lý ảnh giữ nguyên như cũ)
 def load_heart_data(file_path):
     heart_db = {}
     try:
@@ -97,15 +98,22 @@ def get_names_from_embed_fields(embed):
         print(f"Lỗi khi xử lý embed fields: {e}")
         return []
 
+# --- PHẦN CHÍNH CỦA BOT ---
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+processed_message_ids = set() # Set để lưu ID các tin nhắn đã xử lý
+
 async def process_karuta_drop(message):
-    """Hàm xử lý logic chung cho cả tin nhắn mới và tin nhắn được sửa."""
+    """Hàm xử lý logic chung."""
+    if message.id in processed_message_ids:
+        print(f"  [CHẨN ĐOÁN] Bỏ qua tin nhắn ID {message.id} vì đã xử lý rồi.")
+        return
+    
     embed = message.embeds[0]
     character_names = []
-    print(f"🔎 Phát hiện drop từ Karuta. Bắt đầu xử lý...")
+    print(f"🔎 Bắt đầu xử lý drop cho tin nhắn ID: {message.id}")
 
     if embed.image and embed.image.url:
         print("  -> Đây là Drop dạng Ảnh. Sử dụng OCR...")
@@ -132,25 +140,43 @@ async def process_karuta_drop(message):
             reply_lines.append(f"{i+1} | ♡**{heart_display}** · `{display_name}`")
         reply_content = "\n".join(reply_lines)
         await message.reply(reply_content)
-        print("✅ Đã gửi phản hồi thành công.")
+        processed_message_ids.add(message.id) # Đánh dấu tin nhắn này đã xử lý
+        print(f"✅ Đã gửi phản hồi thành công cho tin nhắn ID: {message.id}")
 
 @bot.event
 async def on_ready():
     print(f'✅ Bot Discord đã đăng nhập với tên {bot.user}')
+    print('Bot đang chạy ở chế độ CHẨN ĐOÁN SÂU.')
 
 @bot.event
 async def on_message(message):
-    if message.author.id == KARUTA_ID and "dropping" in message.content and message.embeds:
-        await process_karuta_drop(message)
+    if message.author.id == KARUTA_ID:
+        print("\n" + "="*50)
+        print(f"🔥 SỰ KIỆN ON_MESSAGE TỪ KARUTA (ID: {message.id})")
+        print(f"  - Nội dung: '{message.content}'")
+        print(f"  - Có embeds không?: {bool(message.embeds)}")
+        if message.embeds:
+            print(f"  - Embed[0] có ảnh không?: {bool(message.embeds[0].image.url)}")
+        
+        if "dropping" in message.content and message.embeds:
+            await process_karuta_drop(message)
+        print("="*50 + "\n")
 
-# <<< THÊM SỰ KIỆN LẮNG NGHE TIN NHẮN ĐƯỢC CẬP NHẬT >>>
 @bot.event
 async def on_message_edit(before, after):
-    # 'after' là tin nhắn sau khi đã được cập nhật (đã có embed)
-    if after.author.id == KARUTA_ID and "dropping" in after.content and after.embeds:
-        # Kiểm tra xem tin nhắn trước đó có embed không, nếu có rồi thì bỏ qua để tránh trả lời 2 lần
-        if not before.embeds:
+    if after.author.id == KARUTA_ID:
+        print("\n" + "="*50)
+        print(f"🔥 SỰ KIỆN ON_MESSAGE_EDIT TỪ KARUTA (ID: {after.id})")
+        print(f"  - Nội dung: '{after.content}'")
+        print(f"  - TRƯỚC: Có embeds không?: {bool(before.embeds)}")
+        print(f"  - SAU: Có embeds không?: {bool(after.embeds)}")
+        if after.embeds:
+            print(f"  - SAU: Embed[0] có ảnh không?: {bool(after.embeds[0].image.url)}")
+
+        if "dropping" in after.content and after.embeds:
             await process_karuta_drop(after)
+        print("="*50 + "\n")
+
 
 # --- PHẦN 3: KHỞI ĐỘNG BOT VÀ WEB SERVER ---
 if __name__ == "__main__":
