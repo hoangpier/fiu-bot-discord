@@ -1,8 +1,7 @@
-# main.py (Phiên bản Nâng Cấp - Trình đọc ảnh chính xác cao)
+# main.py (Phiên bản Cải tiến - Tăng độ chính xác & Dễ gỡ lỗi)
 import discord
 from discord.ext import commands
 import os
-import re
 import requests
 import io
 import pytesseract
@@ -11,23 +10,62 @@ from dotenv import load_dotenv
 import threading
 from flask import Flask
 import asyncio
+import logging
+from datetime import datetime
 
-# --- PHẦN 1: CẤU HÌNH WEB SERVER ---
+# =================================================================================
+# PHẦN 0: CẤU HÌNH TRUNG TÂM
+# =================================================================================
+
+# --- Cài đặt chung ---
+load_dotenv()
+TOKEN = os.getenv('DISCORD_TOKEN')
+KARUTA_ID = 646937666251915264
+HEART_DATA_FILE = "tennhanvatvasotim.txt"
+NEW_CHARACTERS_FILE = "new_characters.txt"
+
+# --- Chế độ Gỡ lỗi (DEBUG) ---
+# Đặt thành True để bot tự động lưu các ảnh trung gian khi xử lý OCR
+# Các ảnh sẽ có tên như 'debug_card_0_thresh_120.png'
+DEBUG_MODE = True 
+
+# --- Cấu hình OCR ---
+# Bot sẽ thử các giá trị ngưỡng này lần lượt cho đến khi có kết quả
+# Bạn có thể thêm/bớt/thay đổi các giá trị để thử nghiệm
+OCR_THRESHOLDS_TO_TRY = [120, 110, 130, 100, 90]
+OCR_TESSERACT_CONFIG = r'--psm 7 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 '
+
+# =================================================================================
+# PHẦN 1: CÀI ĐẶT LOGGING VÀ WEB SERVER
+# =================================================================================
+
+# Cấu hình hệ thống logging chuyên nghiệp
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler() # In log ra console
+    ]
+)
+
+# Web server để giữ cho bot hoạt động trên các nền tảng như Render
 app = Flask(__name__)
 @app.route('/')
 def home():
     return "Bot Discord đang hoạt động."
+
 def run_web_server():
     port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+    # Chạy Flask trong một môi trường production-ready hơn
+    from waitress import serve
+    serve(app, host='0.0.0.0', port=port)
 
-# --- PHẦN 2: CẤU HÌNH VÀ CÁC HÀM CỦA BOT DISCORD ---
-load_dotenv()
-TOKEN = os.getenv('DISCORD_TOKEN')
-KARUTA_ID = 646937666251915264
-NEW_CHARACTERS_FILE = "new_characters.txt"
+# =================================================================================
+# PHẦN 2: CÁC HÀM TIỆN ÍCH
+# =================================================================================
 
 def load_heart_data(file_path):
+    """Tải cơ sở dữ liệu tim từ file text."""
     heart_db = {}
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -39,131 +77,148 @@ def load_heart_data(file_path):
                     try:
                         heart_str = parts[0].replace('♡', '').replace(',', '').strip()
                         hearts = int(heart_str)
-                        # Giả định tên nhân vật là phần cuối cùng sau dấu ·
                         name = parts[-1].lower().strip()
                         if name: heart_db[name] = hearts
-                    except (ValueError, IndexError): continue
+                    except (ValueError, IndexError):
+                        continue
     except FileNotFoundError:
-        print(f"LỖI: Không tìm thấy tệp dữ liệu '{file_path}'.")
+        logging.error(f"Không tìm thấy tệp dữ liệu '{file_path}'.")
     except Exception as e:
-        print(f"Lỗi khi đọc tệp dữ liệu: {e}")
-    print(f"✅ Đã tải thành công {len(heart_db)} nhân vật vào cơ sở dữ liệu.")
+        logging.error(f"Lỗi khi đọc tệp dữ liệu: {e}")
+    
+    logging.info(f"Đã tải thành công {len(heart_db)} nhân vật vào cơ sở dữ liệu.")
     return heart_db
 
-HEART_DATABASE = load_heart_data("tennhanvatvasotim.txt")
-
 def log_new_character(character_name):
+    """Ghi lại tên nhân vật mới chưa có trong CSDL tim."""
     try:
         existing_names = set()
         if os.path.exists(NEW_CHARACTERS_FILE):
             with open(NEW_CHARACTERS_FILE, 'r', encoding='utf-8') as f:
                 existing_names = set(line.strip().lower() for line in f)
+        
         if character_name and character_name.lower() not in existing_names:
             with open(NEW_CHARACTERS_FILE, 'a', encoding='utf-8') as f:
                 f.write(f"{character_name}\n")
-            print(f"  [LOG] ⭐ Đã lưu nhân vật mới '{character_name}' vào file {NEW_CHARACTERS_FILE}")
+            logging.info(f"⭐ Đã lưu nhân vật mới '{character_name}' vào file {NEW_CHARACTERS_FILE}")
     except Exception as e:
-        print(f"Lỗi khi đang lưu nhân vật mới: {e}")
+        logging.error(f"Lỗi khi đang lưu nhân vật mới: {e}")
 
-def get_names_from_image_upgraded(image_bytes):
+# =================================================================================
+# PHẦN 3: LOGIC XỬ LÝ ẢNH (OCR) CẢI TIẾN
+# =================================================================================
+
+def _preprocess_for_ocr(image: Image.Image, threshold: int) -> Image.Image:
+    """Hàm phụ: Thực hiện các bước xử lý ảnh để tăng độ nét cho OCR."""
+    img = image.convert('L') # 1. Chuyển sang ảnh xám
+    enhancer = ImageEnhance.Contrast(img)
+    img = enhancer.enhance(2.5) # 2. Tăng độ tương phản
+    img = img.point(lambda p: 255 if p > threshold else 0) # 3. Lọc đen trắng theo ngưỡng
+    return img
+
+def get_names_from_image_robust(image_bytes: bytes) -> list[str]:
     """
-    Hàm đọc ảnh được nâng cấp với kỹ thuật cắt ảnh và xử lý ảnh tiên tiến hơn.
+    Hàm đọc ảnh được cải tiến, thử nhiều ngưỡng xử lý để cho kết quả tốt nhất.
     """
     try:
         main_image = Image.open(io.BytesIO(image_bytes))
         width, height = main_image.size
 
+        # Kiểm tra kích thước cơ bản của ảnh drop
         if not (width > 800 and height > 200):
-            print(f"  [LOG] Kích thước ảnh không giống ảnh drop: {width}x{height}")
+            logging.info(f"Kích thước ảnh {width}x{height} không giống ảnh drop, bỏ qua.")
             return []
 
-        card_width = 278
-        card_height = 248
+        card_width, card_height = 278, 248
         x_coords = [0, 279, 558]
-
         extracted_names = []
-        custom_config = r'--psm 7 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 '
 
         for i in range(3):
             card_box = (x_coords[i], 0, x_coords[i] + card_width, card_height)
             card_img = main_image.crop(card_box)
 
             name_box = (15, 15, card_width - 15, 60)
-            name_img = card_img.crop(name_box)
+            name_img_original = card_img.crop(name_box)
 
-            # --- PHẦN NÂNG CẤP ---
-            # 1. Chuyển sang ảnh xám
-            name_img = name_img.convert('L')
-            # 2. Tăng độ tương phản
-            enhancer = ImageEnhance.Contrast(name_img)
-            name_img = enhancer.enhance(2.5)
-            # 3. Lọc đen trắng (Thresholding) - Giúp loại bỏ nền nhiễu
-            threshold = 120 # Bạn có thể thử thay đổi giá trị này, từ 100 đến 150
-            name_img = name_img.point(lambda p: 255 if p > threshold else 0)
-            # --------------------
+            found_name = ""
+            # Thử với từng giá trị ngưỡng trong danh sách
+            for threshold in OCR_THRESHOLDS_TO_TRY:
+                processed_img = _preprocess_for_ocr(name_img_original.copy(), threshold)
 
-            text = pytesseract.image_to_string(name_img, config=custom_config)
-            cleaned_name = text.strip().replace("\n", " ")
+                if DEBUG_MODE:
+                    timestamp = datetime.now().strftime("%H%M%S")
+                    processed_img.save(f"debug_card_{i}_thresh_{threshold}_{timestamp}.png")
+
+                text = pytesseract.image_to_string(processed_img, config=OCR_TESSERACT_CONFIG)
+                cleaned_name = text.strip().replace("\n", " ")
+                
+                # Nếu đọc được tên đủ dài, chấp nhận kết quả và dừng thử
+                if len(cleaned_name) > 2:
+                    found_name = cleaned_name
+                    logging.info(f"Thẻ #{i+1}: Nhận dạng thành công với ngưỡng={threshold} -> '{found_name}'")
+                    break # Thoát khỏi vòng lặp thử ngưỡng
             
-            if len(cleaned_name) > 2: # Tăng yêu cầu độ dài tên để lọc rác tốt hơn
-                extracted_names.append(cleaned_name)
-            else:
-                extracted_names.append("")
+            if not found_name:
+                logging.warning(f"Thẻ #{i+1}: Không thể nhận dạng tên sau khi thử mọi ngưỡng.")
+            
+            extracted_names.append(found_name)
 
         return extracted_names
     except Exception as e:
-        print(f"  [LỖI] Xảy ra lỗi trong quá trình xử lý ảnh: {e}")
+        logging.error(f"Xảy ra lỗi nghiêm trọng trong quá trình xử lý ảnh: {e}", exc_info=True)
         return ["Lỗi OCR", "Lỗi OCR", "Lỗi OCR"]
 
-# --- PHẦN CHÍNH CỦA BOT ---
+# =================================================================================
+# PHẦN 4: LOGIC CHÍNH CỦA BOT DISCORD
+# =================================================================================
+
+# Tải CSDL tim một lần khi bot khởi động
+HEART_DATABASE = load_heart_data(HEART_DATA_FILE)
+
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-@bot.command()
-async def ping(ctx):
-    await ctx.send("Pong!")
-
 @bot.event
 async def on_ready():
-    print(f'✅ Bot Discord đã đăng nhập với tên {bot.user}')
-    print('Bot đang chạy với trình đọc ảnh nâng cấp.')
+    logging.info(f'✅ Bot Discord đã đăng nhập với tên {bot.user}')
+    logging.info('Bot đang chạy với trình đọc ảnh cải tiến.')
 
 @bot.event
-async def on_message(message):
-    await bot.process_commands(message)
-    
-    # **ĐIỀU KIỆN MỚI**: Phát hiện tin nhắn từ Karuta VÀ có file đính kèm
-    if not (message.author.id == KARUTA_ID and message.attachments):
+async def on_message(message: discord.Message):
+    # Bỏ qua tin nhắn từ chính bot hoặc không phải từ Karuta
+    if message.author.id != KARUTA_ID:
+        return
+    # Chỉ xử lý tin nhắn có file đính kèm
+    if not message.attachments:
         return
 
-    # Chỉ xử lý nếu file đính kèm là ảnh
     attachment = message.attachments[0]
-    if not attachment.content_type.startswith('image/'):
+    if not attachment.content_type or not attachment.content_type.startswith('image/'):
         return
     
-    print("\n" + "="*40)
-    print(f"🔎 [LOG] Phát hiện ảnh drop từ KARUTA. Bắt đầu xử lý...")
-    print(f"  - URL ảnh: {attachment.url}")
+    logging.info("="*40)
+    logging.info(f"🔎 Phát hiện ảnh drop từ KARUTA. Bắt đầu xử lý...")
+    logging.info(f"  - URL ảnh: {attachment.url}")
 
     try:
         # Tải ảnh về
-        response = requests.get(attachment.url)
-        response.raise_for_status() # Báo lỗi nếu tải thất bại
+        response = await asyncio.to_thread(requests.get, attachment.url)
+        response.raise_for_status()
         image_bytes = response.content
 
-        # Gọi hàm xử lý ảnh nâng cấp
-        character_names = get_names_from_image_upgraded(image_bytes)
+        # Gọi hàm xử lý ảnh phiên bản mới, mạnh mẽ hơn
+        character_names = get_names_from_image_robust(image_bytes)
         
-        print(f"  -> Kết quả nhận dạng tên: {character_names}")
+        logging.info(f"-> Kết quả nhận dạng cuối cùng: {character_names}")
 
-        if not character_names:
-            print("  -> Không nhận dạng được tên nào. Bỏ qua.")
-            print("="*40 + "\n")
+        if not any(character_names): # Nếu tất cả đều là chuỗi rỗng
+            logging.warning("-> Không nhận dạng được tên nào. Bỏ qua.")
+            logging.info("="*40)
             return
 
         async with message.channel.typing():
-            await asyncio.sleep(1) # Chờ 1 giây cho tự nhiên
+            await asyncio.sleep(1)
             reply_lines = []
             for i, name in enumerate(character_names):
                 display_name = name if name else "Không đọc được"
@@ -178,26 +233,28 @@ async def on_message(message):
             
             reply_content = "\n".join(reply_lines)
             await message.reply(reply_content)
-            print("✅ ĐÃ GỬI PHẢN HỒI THÀNH CÔNG")
+            logging.info("✅ ĐÃ GỬI PHẢN HỒI THÀNH CÔNG")
 
     except requests.exceptions.RequestException as e:
-        print(f"  [LỖI] Không thể tải ảnh từ URL: {e}")
+        logging.error(f"Không thể tải ảnh từ URL: {e}")
     except Exception as e:
-        print(f"  [LỖI] Đã xảy ra lỗi không xác định: {e}")
+        logging.error(f"Đã xảy ra lỗi không xác định trong on_message: {e}", exc_info=True)
 
-    print("="*40 + "\n")
+    logging.info("="*40)
 
+# =================================================================================
+# PHẦN 5: KHỞI ĐỘNG BOT
+# =================================================================================
 
-# --- PHẦN KHỞI ĐỘNG ---
 if __name__ == "__main__":
-    # Lưu ý: Nếu Tesseract không nằm trong PATH, bạn cần thêm dòng sau:
-    # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-    
-    if TOKEN:
-        bot_thread = threading.Thread(target=bot.run, args=(TOKEN,))
-        bot_thread.start()
-        print("🚀 Khởi động Web Server...")
-        run_web_server()
+    if not TOKEN:
+        logging.critical("LỖI: Không tìm thấy DISCORD_TOKEN trong tệp .env hoặc biến môi trường.")
     else:
-        print("LỖI: Không tìm thấy DISCORD_TOKEN trong tệp .env.")
-
+        # Chạy Web Server trong một luồng riêng
+        web_thread = threading.Thread(target=run_web_server)
+        web_thread.daemon = True
+        web_thread.start()
+        logging.info("🚀 Khởi động Web Server...")
+        
+        # Chạy Bot Discord
+        bot.run(TOKEN)
