@@ -1,9 +1,9 @@
-# main.py (Phiên bản Embed - Siêu nhanh, không cần OCR)
+# main.py (Phiên bản Embed v2 - Xử lý nhiều định dạng)
 
 import discord
 from discord.ext import commands
 import os
-import re # Thư viện cần thiết để trích xuất dữ liệu
+import re
 from dotenv import load_dotenv
 import threading
 from flask import Flask
@@ -13,11 +13,9 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    """Trang chủ đơn giản để hiển thị bot đang hoạt động."""
     return "Bot Discord đang hoạt động."
 
 def run_web_server():
-    """Chạy web server Flask trên cổng được cấu hình."""
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
 
@@ -30,7 +28,6 @@ NEW_CHARACTERS_FILE = "new_characters.txt"
 HEART_DATABASE_FILE = "tennhanvatvasotim.txt"
 
 def load_heart_data(file_path):
-    """Tải dữ liệu số tim của nhân vật từ một file."""
     heart_db = {}
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -54,7 +51,6 @@ def load_heart_data(file_path):
 HEART_DATABASE = load_heart_data(HEART_DATABASE_FILE)
 
 def log_new_character(character_name):
-    """Ghi lại tên nhân vật mới."""
     try:
         existing_names = set()
         if os.path.exists(NEW_CHARACTERS_FILE):
@@ -67,50 +63,56 @@ def log_new_character(character_name):
     except Exception as e:
         print(f"Lỗi khi đang lưu nhân vật mới: {e}")
 
-# <<< BỎ HOÀN TOÀN HÀM get_names_from_image_ocr >>>
-
 # --- PHẦN CHÍNH CỦA BOT ---
 intents = discord.Intents.default()
-intents.message_content = True # Vẫn cần để đọc nội dung tin nhắn cơ bản
+intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    """Sự kiện khi bot đã đăng nhập thành công vào Discord."""
     print(f'✅ Bot Discord đã đăng nhập với tên {bot.user}')
-    print('Bot đang chạy với phương pháp đọc Embed siêu tốc.')
+    print('Bot đang chạy với bộ xử lý Embed v2 thông minh.')
 
 @bot.event
 async def on_message(message):
-    """Sự kiện xử lý mỗi khi có tin nhắn mới."""
-    # Chỉ xử lý tin nhắn từ Karuta và tin nhắn đó phải có Embed
     if not (message.author.id == KARUTA_ID and message.embeds):
         return
 
     try:
-        # Lấy embed đầu tiên từ tin nhắn
         embed = message.embeds[0]
+        character_data = []
 
-        # Karuta drop embed thường có thông tin trong 'description'
-        if not embed.description:
-            return
-        
         print("\n" + "="*40)
-        print(f"🔎 [LOG] Phát hiện drop embed từ KARUTA. Bắt đầu xử lý...")
+        print(f"🔎 [LOG] Phát hiện embed từ KARUTA. Bắt đầu phân tích...")
 
-        # Sử dụng regex để tìm tất cả các dòng chứa thông tin thẻ
-        # Mẫu: `Print` · icon · `Tên nhân vật` · Tên series
-        pattern = r"`#(\d+)`.*· `(.*?)`"
-        matches = re.findall(pattern, embed.description)
+        # --- LOGIC MỚI: KIỂM TRA NHIỀU NƠI ---
 
-        if not matches:
-            print("  -> Không tìm thấy dữ liệu thẻ hợp lệ trong embed. Bỏ qua.")
+        # Cách 1: Kiểm tra trong 'description' (cho các drop dạng danh sách)
+        if embed.description:
+            print("  -> Tìm thấy 'description'. Đang phân tích theo dạng danh sách...")
+            pattern = r"`#(\d+)`.*· `(.*?)`"
+            matches = re.findall(pattern, embed.description)
+            if matches:
+                character_data = [(name, print_num) for print_num, name in matches]
+
+        # Cách 2: Nếu không có trong description, kiểm tra trong 'fields' (cho các drop dạng cột)
+        if not character_data and embed.fields:
+            print("  -> 'description' trống. Chuyển sang phân tích 'fields'...")
+            for field in embed.fields:
+                char_name = field.name
+                print_match = re.search(r'#(\d+)', field.value)
+                if char_name and print_match:
+                    print_number = print_match.group(1)
+                    character_data.append((char_name, print_number))
+
+        # --- KẾT THÚC LOGIC MỚI ---
+
+        if not character_data:
+            print("  -> Không tìm thấy dữ liệu nhân vật dạng text trong embed. Bỏ qua.")
             print("="*40 + "\n")
             return
         
-        # Dữ liệu character_data bây giờ là một danh sách các cặp (tên, print)
-        character_data = [(name, print_num) for print_num, name in matches]
-        print(f"  -> Dữ liệu trích xuất: {character_data}")
+        print(f"  -> Dữ liệu trích xuất thành công: {character_data}")
 
         async with message.channel.typing():
             reply_lines = []
@@ -127,14 +129,13 @@ async def on_message(message):
                 reply_lines.append(f"{i+1} | ♡**{heart_display}** · `{display_name}` `#{print_number}`")
             
             reply_content = "\n".join(reply_lines)
-            await message.reply(reply_content, mention_author=False) # mention_author=False để không ping người dùng
+            await message.reply(reply_content, mention_author=False)
             print("✅ ĐÃ GỬI PHẢN HỒI THÀNH CÔNG")
 
     except Exception as e:
         print(f"  [LỖI] Đã xảy ra lỗi không xác định khi xử lý embed: {e}")
     
     print("="*40 + "\n")
-
 
 # --- PHẦN KHỞI ĐỘNG ---
 if __name__ == "__main__":
