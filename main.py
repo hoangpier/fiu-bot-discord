@@ -1,4 +1,4 @@
-# main.py (Phiên bản sửa lỗi - Luôn trả lời)
+# main.py (Phiên bản Hoàn chỉnh Cuối cùng)
 import discord
 from discord.ext import commands
 import os
@@ -11,22 +11,27 @@ from dotenv import load_dotenv
 import threading
 from flask import Flask
 
-# --- CẤU HÌNH WEB SERVER ---
+# --- PHẦN 1: CẤU HÌNH WEB SERVER ĐỂ CHẠY TRÊN RENDER ---
 app = Flask(__name__)
+
 @app.route('/')
 def home():
+    # Trang web đơn giản để trả lời các yêu cầu kiểm tra từ Render
     return "Bot Discord đang hoạt động."
+
 def run_web_server():
+    # Lấy cổng từ biến môi trường của Render, mặc định là 10000
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- CẤU HÌNH BOT DISCORD ---
+# --- PHẦN 2: CẤU HÌNH VÀ CÁC HÀM CỦA BOT DISCORD ---
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 KARUTA_ID = 646937666251915264
 NEW_CHARACTERS_FILE = "new_characters.txt"
 
 def load_heart_data(file_path):
+    """Tải dữ liệu từ file txt một cách linh hoạt."""
     heart_db = {}
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -51,6 +56,7 @@ def load_heart_data(file_path):
 HEART_DATABASE = load_heart_data("tennhanvatvasotim.txt")
 
 def log_new_character(character_name):
+    """Lưu tên nhân vật mới vào file new_characters.txt nếu chưa tồn tại."""
     try:
         existing_names = set()
         if os.path.exists(NEW_CHARACTERS_FILE):
@@ -64,12 +70,14 @@ def log_new_character(character_name):
         print(f"Lỗi khi đang lưu nhân vật mới: {e}")
 
 def preprocess_image_for_ocr(image_obj):
+    """Tiền xử lý ảnh để tăng độ chính xác cho OCR."""
     img = image_obj.convert('L')
     enhancer = ImageEnhance.Contrast(img)
     img = enhancer.enhance(2.0)
     return img
 
 def get_names_from_image(image_url):
+    """Sử dụng OCR để đọc tên 3 nhân vật từ ảnh drop."""
     try:
         response = requests.get(image_url)
         if response.status_code != 200: return []
@@ -92,6 +100,7 @@ def get_names_from_image(image_url):
         return []
 
 def get_names_from_embed_fields(embed):
+    """Trích xuất tên nhân vật từ các field của tin nhắn embed."""
     extracted_names = []
     try:
         for field in embed.fields:
@@ -116,7 +125,6 @@ async def on_message(message):
     if message.author.id == KARUTA_ID and "dropping" in message.content and message.embeds:
         embed = message.embeds[0]
         character_names = []
-
         print(f"🔎 Phát hiện drop từ Karuta. Bắt đầu xử lý...")
 
         if embed.image and embed.image.url:
@@ -126,21 +134,15 @@ async def on_message(message):
             print("  -> Đây là Drop dạng Chữ/Embed. Đọc dữ liệu fields...")
             character_names = get_names_from_embed_fields(embed)
 
-        # Đảm bảo list character_names luôn có 3 phần tử để xử lý
         while len(character_names) < 3:
-            character_names.append("") # Thêm chuỗi rỗng nếu OCR thất bại
+            character_names.append("")
 
         print(f"  Nhận dạng các tên: {character_names}")
 
         async with message.channel.typing():
             reply_lines = []
-            
-            # <<< SỬA LỖI LOGIC NẰM Ở ĐÂY >>>
-            # Vòng lặp bây giờ sẽ luôn chạy 3 lần và tạo 3 dòng trả lời
             for i in range(3):
                 name = character_names[i]
-                
-                # Sử dụng tên hiển thị, nếu tên rỗng thì báo không đọc được
                 display_name = name if name else "Không đọc được"
                 lookup_name = name.lower().strip() if name else ""
                 
@@ -156,12 +158,14 @@ async def on_message(message):
             await message.reply(reply_content)
             print("✅ Đã gửi phản hồi thành công.")
 
-# --- KHỞI ĐỘNG BOT VÀ WEB SERVER ---
+# --- PHẦN 3: KHỞI ĐỘNG BOT VÀ WEB SERVER ---
 if __name__ == "__main__":
     if TOKEN:
+        # Chạy bot trong một luồng (thread) riêng
         bot_thread = threading.Thread(target=bot.run, args=(TOKEN,))
         bot_thread.start()
-        print("🚀 Khởi động Web Server để đáp ứng Render...")
+        # Chạy web server ở luồng chính để đáp ứng Render
+        print("🚀 Khởi động Web Server...")
         run_web_server()
     else:
         print("LỖI: Không tìm thấy DISCORD_TOKEN trong tệp .env.")
