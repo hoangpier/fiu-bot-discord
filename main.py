@@ -1,5 +1,4 @@
-# main.py (Phiên bản Hoàn Chỉnh - OpenCV + Tesseract với tính năng gỡ lỗi)
-# Tự động tìm thẻ trong ảnh và nhận dạng ký tự tại chỗ.
+# main.py (Phiên bản OCR Tại Chỗ - Sử dụng PIL + Tesseract)
 
 import discord
 from discord.ext import commands
@@ -7,18 +6,14 @@ import os
 import re
 import requests
 import io
-from PIL import Image, ImageEnhance, ImageOps
+from PIL import Image
 from dotenv import load_dotenv
 import threading
 from flask import Flask
 import asyncio
-
-# Thư viện cho xử lý ảnh nâng cao
 import pytesseract
-import cv2
-import numpy as np
 
-# --- PHẦN 1: CẤU HÌNH WEB SERVER (CHO RENDER) ---
+# --- PHẦN 1: CẤU HÌNH WEB SERVER ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -35,25 +30,24 @@ def run_web_server():
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 
-# Cấu hình đường dẫn cho Tesseract (chỉ cần cho Windows nếu không add vào PATH)
+# <<< BỎ: Không cần GEMINI_API_KEY nữa >>>
+# <<< THÊM: Cấu hình Tesseract nếu cần >>>
+# Ví dụ trên Windows:
 # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 KARUTA_ID = 646937666251915264
+NEW_CHARACTERS_FILE = "new_characters.txt"
+HEART_DATABASE_FILE = "tennhanvatvasotim.txt"
 
-# Cấu hình đường dẫn file cho Render Disks
-DATA_DIR = "/data" # Thư mục của Render Disk, hoặc "." nếu chạy local
-NEW_CHARACTERS_FILE = os.path.join(DATA_DIR, "new_characters.txt")
-HEART_DATABASE_FILE = os.path.join(DATA_DIR, "tennhanvatvasotim.txt")
+# <<< BỎ: Không cần cơ chế Cooldown cho OCR tại chỗ >>>
 
 def load_heart_data(file_path):
     """Tải dữ liệu số tim của nhân vật từ một file."""
     heart_db = {}
-    if not os.path.exists(os.path.dirname(file_path)):
-        os.makedirs(os.path.dirname(file_path))
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
+            # ... (Nội dung hàm giữ nguyên)
             for line in f:
-                # ... (logic xử lý file)
                 line = line.strip()
                 if not line.startswith('♡') or not line: continue
                 parts = line.split('·')
@@ -65,9 +59,8 @@ def load_heart_data(file_path):
                         if name: heart_db[name] = hearts
                     except (ValueError, IndexError): continue
     except FileNotFoundError:
-        print(f"INFO: Không tìm thấy tệp dữ liệu '{file_path}'. Sẽ tạo file mới khi cần.")
-    except Exception as e:
-        print(f"Lỗi khi đọc tệp dữ liệu: {e}")
+        print(f"LỖI: Không tìm thấy tệp dữ liệu '{file_path}'.")
+    # ...
     print(f"✅ Đã tải thành công {len(heart_db)} nhân vật vào cơ sở dữ liệu số tim.")
     return heart_db
 
@@ -75,12 +68,12 @@ HEART_DATABASE = load_heart_data(HEART_DATABASE_FILE)
 
 def log_new_character(character_name):
     """Ghi lại tên nhân vật mới."""
+    # ... (Nội dung hàm giữ nguyên)
     try:
         existing_names = set()
         if os.path.exists(NEW_CHARACTERS_FILE):
             with open(NEW_CHARACTERS_FILE, 'r', encoding='utf-8') as f:
                 existing_names = set(line.strip().lower() for line in f)
-        
         if character_name and character_name.lower() not in existing_names:
             with open(NEW_CHARACTERS_FILE, 'a', encoding='utf-8') as f:
                 f.write(f"{character_name}\n")
@@ -88,66 +81,57 @@ def log_new_character(character_name):
     except Exception as e:
         print(f"Lỗi khi đang lưu nhân vật mới: {e}")
 
-async def process_drop_dynamically(image_bytes):
-    """Hàm nâng cao: Tự động tìm thẻ trong ảnh bằng OpenCV và xử lý bằng Tesseract"""
+# <<< THAY THẾ HOÀN TOÀN: Hàm xử lý ảnh mới sử dụng PIL và Tesseract >>>
+async def get_names_from_image_ocr(image_bytes):
+    """
+    Sử dụng PIL để cắt ảnh và Tesseract để đọc chữ.
+    Logic dựa trên file docanh.py.
+    """
     try:
-        np_arr = np.frombuffer(image_bytes, np.uint8)
-        full_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
-        gray = cv2.cvtColor(full_image, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blurred, 50, 150)
-
-        contours, _ = cv2.findContours(edges.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        found_cards = []
-        for c in contours:
-            x, y, w, h = cv2.boundingRect(c)
-            aspect_ratio = w / float(h)
-            area = cv2.contourArea(c)
-
-            # <<< BƯỚC GỠ LỖI: In ra thông số của tất cả các hình tìm được >>>
-            print(f"--- Tìm thấy contour với Area: {area}, Tỉ lệ: {aspect_ratio:.2f}")
-
-            # <<< BƯỚC TINH CHỈNH: Sửa giá trị "20000" cho phù hợp với log của bạn >>>
-            # Dựa vào kết quả in ra ở trên để chỉnh lại con số này.
-            if area > 20000 and 0.6 < aspect_ratio < 0.8:
-                found_cards.append((x, y, w, h))
-
-        if not found_cards:
-            print("  [OpenCV] Không tìm thấy thẻ bài nào phù hợp với bộ lọc.")
+        img = Image.open(io.BytesIO(image_bytes))
+        width, height = img.size
+        
+        # Giả sử kích thước ảnh drop 3 thẻ là 836x312
+        if width < 830 or height < 300:
+            print(f"  [OCR] Kích thước ảnh không phù hợp ({width}x{height}), bỏ qua.")
             return []
 
-        found_cards.sort(key=lambda item: item[0])
-        print(f"  [OpenCV] Đã tìm thấy {len(found_cards)} thẻ bài hợp lệ.")
-        
-        final_results = []
-        for (x, y, w, h) in found_cards:
-            card_image_pil = Image.fromarray(full_image[y:y+h, x:x+w])
-            
-            card_w, card_h = card_image_pil.size
-            name_area = card_image_pil.crop((int(card_w*0.07), int(card_h*0.04), int(card_w*0.93), int(card_h*0.15)))
-            number_area = card_image_pil.crop((int(card_w*0.5), int(card_h*0.9), int(card_w*0.95), int(card_h*0.96)))
-            
-            number_area_processed = ImageOps.grayscale(number_area)
-            number_area_processed = ImageOps.invert(number_area_processed)
-            enhancer = ImageEnhance.Contrast(number_area_processed)
-            number_area_processed = enhancer.enhance(2.5)
-            
-            custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789'
-            
-            char_name = pytesseract.image_to_string(name_area).strip()
-            print_number = pytesseract.image_to_string(number_area_processed, config=custom_config).strip()
-            
-            char_name_cleaned = " ".join(re.split(r'\s+', char_name))
+        # Tọa độ và kích thước cố định cho mỗi thẻ
+        card_width = 278
+        card_height = 248
+        x_coords = [0, 279, 558] # Tọa độ x bắt đầu của mỗi thẻ
+        y_offset = 32            # Tọa độ y bắt đầu của các thẻ
 
-            if char_name_cleaned and print_number:
-                final_results.append((char_name_cleaned, print_number))
+        processed_data = []
 
-        return final_results
+        for i in range(3): # Xử lý 3 thẻ
+            # Cắt ảnh thẻ
+            box = (x_coords[i], y_offset, x_coords[i] + card_width, y_offset + card_height)
+            card_img = img.crop(box)
+
+            # Cắt lấy vùng tên nhân vật
+            top_box = (20, 20, card_width - 20, 60)
+            top_img = card_img.crop(top_box)
+            
+            # Cắt lấy vùng mã số
+            print_box = (100, card_height - 30, card_width - 20, card_height - 10)
+            print_img = card_img.crop(print_box)
+
+            # Đọc chữ bằng Tesseract
+            char_name_config = r"--psm 7 --oem 3"
+            print_num_config = r"--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789"
+
+            char_name = pytesseract.image_to_string(top_img, config=char_name_config).strip().replace("\n", " ")
+            print_number = pytesseract.image_to_string(print_img, config=print_num_config).strip()
+            
+            if char_name:
+                processed_data.append((char_name, print_number or "???"))
+
+        print(f"  [OCR] Kết quả nhận dạng: {processed_data}")
+        return processed_data
 
     except Exception as e:
-        print(f"  [LỖI OpenCV/Tesseract] Đã xảy ra lỗi: {e}")
+        print(f"  [LỖI OCR] Đã xảy ra lỗi khi xử lý ảnh: {e}")
         return []
 
 # --- PHẦN CHÍNH CỦA BOT ---
@@ -157,20 +141,26 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
+    """Sự kiện khi bot đã đăng nhập thành công vào Discord."""
     print(f'✅ Bot Discord đã đăng nhập với tên {bot.user}')
-    print('Bot đang chạy với trình đọc ảnh nâng cao (OpenCV + Tesseract).')
+    print('Bot đang chạy với trình đọc ảnh OCR Tại Chỗ (PIL + Tesseract).')
 
 @bot.event
 async def on_message(message):
+    """Sự kiện xử lý mỗi khi có tin nhắn mới."""
+    # <<< BỎ: Không cần biến global last_api_call_time >>>
+
     if not (message.author.id == KARUTA_ID and message.attachments):
         return
 
+    # <<< BỎ: Toàn bộ logic kiểm tra Cooldown >>>
+    
     attachment = message.attachments[0]
     if not attachment.content_type.startswith('image/'):
         return
 
     print("\n" + "="*40)
-    print(f"🔎 [LOG] Phát hiện ảnh drop từ KARUTA. Bắt đầu xử lý...")
+    print(f"🔎 [LOG] Phát hiện ảnh drop từ KARUTA. Bắt đầu xử lý OCR...")
     print(f"  - URL ảnh: {attachment.url}")
 
     try:
@@ -178,7 +168,8 @@ async def on_message(message):
         response.raise_for_status()
         image_bytes = response.content
 
-        character_data = await process_drop_dynamically(image_bytes)
+        # <<< THAY ĐỔI: Gọi hàm OCR mới >>>
+        character_data = await get_names_from_image_ocr(image_bytes)
         
         print(f"  -> Kết quả nhận dạng cuối cùng: {character_data}")
 
@@ -191,8 +182,8 @@ async def on_message(message):
             await asyncio.sleep(1)
             reply_lines = []
             for i, (name, print_number) in enumerate(character_data):
-                display_name = name
-                lookup_name = name.lower().strip()
+                display_name = name if name else "Không đọc được"
+                lookup_name = name.lower().strip() if name else ""
                 
                 if lookup_name and lookup_name not in HEART_DATABASE:
                     log_new_character(name)
@@ -206,16 +197,13 @@ async def on_message(message):
             await message.reply(reply_content)
             print("✅ ĐÃ GỬI PHẢN HỒI THÀNH CÔNG")
 
-    except requests.exceptions.RequestException as e:
-        print(f"  [LỖI] Không thể tải ảnh từ URL: {e}")
     except Exception as e:
         print(f"  [LỖI] Đã xảy ra lỗi không xác định: {e}")
-
     print("="*40 + "\n")
-
 
 # --- PHẦN KHỞI ĐỘNG ---
 if __name__ == "__main__":
+    # <<< THAY ĐỔI: Chỉ cần kiểm tra TOKEN >>>
     if TOKEN:
         print("✅ Đã tìm thấy DISCORD_TOKEN.")
         bot_thread = threading.Thread(target=bot.run, args=(TOKEN,))
@@ -223,4 +211,4 @@ if __name__ == "__main__":
         print("🚀 Khởi động Web Server để giữ bot hoạt động...")
         run_web_server()
     else:
-        print("❌ LỖI: Không tìm thấy DISCORD_TOKEN trong tệp .env. Vui lòng thêm TOKEN của bot vào tệp .env.")
+        print("❌ LỖI: Không tìm thấy DISCORD_TOKEN trong tệp .env.")
