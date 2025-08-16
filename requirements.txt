@@ -6,4 +6,5 @@ requests
 Flask
 waitress
 numpy
-aiohttp
+opencv-python
+
