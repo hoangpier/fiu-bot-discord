@@ -85,6 +85,7 @@ def get_names_from_image_advanced(image_url):
     Hàm xử lý ảnh drop nâng cao, tự động nhận diện 3 hoặc 4 thẻ và trích xuất tên.
     """
     try:
+        print("--- [CHẨN ĐOÁN] Bắt đầu hàm get_names_from_image_advanced ---")
         response = requests.get(image_url)
         if response.status_code != 200:
             print(f"Lỗi khi tải ảnh: Status code {response.status_code}")
@@ -138,7 +139,8 @@ def get_names_from_image_advanced(image_url):
         return extracted_names
 
     except Exception as e:
-        print(f"Lỗi nghiêm trọng trong quá trình xử lý ảnh: {e}")
+        print(f"!!! LỖI NGHIÊM TRỌNG TRONG OCR: {e} !!!")
+        print("!!! VUI LÒNG KIỂM TRA LẠI CÀI ĐẶT TESSERACT OCR TRÊN MÁY CHỦ/HOSTING CỦA BẠN !!!")
         return []
 
 def get_names_from_embed_fields(embed):
