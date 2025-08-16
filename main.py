@@ -1,4 +1,5 @@
-# main.py (Phiên bản Hoàn Chỉnh - Đọc Tên + Mã Số & Chống Lỗi 429)
+# main.py (Phiên bản Hoàn Chỉnh - OpenCV + Tesseract)
+# Tự động tìm thẻ trong ảnh và nhận dạng ký tự tại chỗ.
 
 import discord
 from discord.ext import commands
@@ -6,13 +7,16 @@ import os
 import re
 import requests
 import io
-import base64
-from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageEnhance, ImageOps
 from dotenv import load_dotenv
 import threading
 from flask import Flask
 import asyncio
-import time # <<< THÊM: Thư viện thời gian cho Cooldown
+
+# <<< THÊM: Các thư viện cho xử lý ảnh nâng cao >>>
+import pytesseract
+import cv2
+import numpy as np
 
 # --- PHẦN 1: CẤU HÌNH WEB SERVER ---
 app = Flask(__name__)
@@ -28,24 +32,20 @@ def run_web_server():
     app.run(host='0.0.0.0', port=port)
 
 # --- PHẦN 2: CẤU HÌNH VÀ CÁC HÀM CỦA BOT DISCORD ---
-load_dotenv() # Tải các biến môi trường từ tệp .env
+load_dotenv()
 
-# Lấy TOKEN và API KEY từ file .env
 TOKEN = os.getenv('DISCORD_TOKEN')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+
+# <<< THÊM: Cấu hình đường dẫn cho Tesseract (chỉ cần cho Windows nếu không add vào PATH) >>>
+# Bỏ comment và sửa đường dẫn nếu cần thiết
+# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 KARUTA_ID = 646937666251915264
 NEW_CHARACTERS_FILE = "new_characters.txt"
 HEART_DATABASE_FILE = "tennhanvatvasotim.txt"
 
-# <<< THÊM: Cấu hình cho Cooldown để chống lỗi 429 >>>
-last_api_call_time = 0
-COOLDOWN_SECONDS = 3 # Thời gian chờ giữa các lần gọi API (giây)
-
 def load_heart_data(file_path):
-    """
-    Tải dữ liệu số tim của nhân vật từ một file.
-    """
+    """Tải dữ liệu số tim của nhân vật từ một file."""
     heart_db = {}
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -73,9 +73,7 @@ def load_heart_data(file_path):
 HEART_DATABASE = load_heart_data(HEART_DATABASE_FILE)
 
 def log_new_character(character_name):
-    """
-    Ghi lại tên nhân vật mới chưa có trong cơ sở dữ liệu số tim vào một file.
-    """
+    """Ghi lại tên nhân vật mới."""
     try:
         existing_names = set()
         if os.path.exists(NEW_CHARACTERS_FILE):
@@ -89,78 +87,67 @@ def log_new_character(character_name):
     except Exception as e:
         print(f"Lỗi khi đang lưu nhân vật mới: {e}")
 
-async def get_names_from_image_via_gemini_api(image_bytes):
-    """
-    Sử dụng Gemini API để nhận diện tên nhân vật VÀ MÃ SỐ từ ảnh.
-    Trả về một danh sách các tuple, mỗi tuple chứa (tên, mã số).
-    """
-    if not GEMINI_API_KEY:
-        print("  [LỖI API] Biến môi trường GEMINI_API_KEY chưa được thiết lập.")
-        return [("Lỗi API (Key)", "0"), ("Lỗi API (Key)", "0"), ("Lỗi API (Key)", "0")]
-
+# <<< HÀM NÂNG CAO: Tự động tìm thẻ trong ảnh bằng OpenCV và xử lý bằng Tesseract >>>
+async def process_drop_dynamically(image_bytes):
     try:
-        base64_image = base64.b64encode(image_bytes).decode('utf-8')
-        prompt = "Từ hình ảnh thẻ bài Karuta này, hãy trích xuất tên nhân vật và dãy số ở góc dưới cùng bên phải của mỗi thẻ. Trả về kết quả theo thứ tự từ trái sang phải, mỗi nhân vật trên một dòng, theo định dạng chính xác: Tên nhân vật #DãySố"
+        np_arr = np.frombuffer(image_bytes, np.uint8)
+        full_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-        payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [
-                        {"text": prompt},
-                        {
-                            "inlineData": {
-                                "mimeType": "image/webp",
-                                "data": base64_image
-                            }
-                        }
-                    ]
-                }
-            ]
-        }
+        # Bước 1: Tiền xử lý ảnh để tìm cạnh
+        gray = cv2.cvtColor(full_image, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blurred, 50, 150)
+
+        # Bước 2: Tìm tất cả các đường viền
+        contours, _ = cv2.findContours(edges.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        found_cards = []
+        for c in contours:
+            x, y, w, h = cv2.boundingRect(c)
+            aspect_ratio = w / float(h)
+            area = cv2.contourArea(c)
+
+            # Bước 3: Lọc các đường viền để tìm thẻ bài
+            # !!! Bạn có thể cần tinh chỉnh các giá trị này !!!
+            if area > 50000 and 0.6 < aspect_ratio < 0.8:
+                found_cards.append((x, y, w, h))
+
+        if not found_cards:
+            print("  [OpenCV] Không tìm thấy thẻ bài nào phù hợp.")
+            return []
+
+        found_cards.sort(key=lambda item: item[0])
+        print(f"  [OpenCV] Đã tìm thấy {len(found_cards)} thẻ bài.")
         
-        apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + GEMINI_API_KEY
-        print("  [API] Đang gửi ảnh đến Gemini API để nhận dạng (Tên + Mã số)...")
-        
-        response = requests.post(apiUrl, headers={'Content-Type': 'application/json'}, json=payload)
-        response.raise_for_status()
-        result = response.json()
-        
-        if result and result.get('candidates') and result['candidates'][0].get('content') and result['candidates'][0]['content'].get('parts'):
-            api_text = result['candidates'][0]['content']['parts'][0]['text']
+        final_results = []
+        # Bước 4: Cắt và xử lý OCR cho từng thẻ tìm được
+        for (x, y, w, h) in found_cards:
+            card_image_pil = Image.fromarray(full_image[y:y+h, x:x+w])
             
-            processed_data = []
-            lines = api_text.strip().split('\n')
+            card_w, card_h = card_image_pil.size
+            name_area = card_image_pil.crop((int(card_w*0.07), int(card_h*0.04), int(card_w*0.93), int(card_h*0.15)))
+            number_area = card_image_pil.crop((int(card_w*0.5), int(card_h*0.9), int(card_w*0.95), int(card_h*0.96)))
             
-            for line in lines:
-                if '#' in line:
-                    parts = line.split('#', 1)
-                    name = parts[0].strip()
-                    print_number = parts[1].strip()
-                    
-                    cleaned_name = re.sub(r'[^a-zA-Z0-9\s\'-.]', '', name)
-                    cleaned_name = ' '.join(cleaned_name.split())
-                    
-                    processed_data.append((cleaned_name, print_number))
-                else:
-                    processed_data.append((line.strip(), "???"))
+            number_area_processed = ImageOps.grayscale(number_area)
+            number_area_processed = ImageOps.invert(number_area_processed)
+            enhancer = ImageEnhance.Contrast(number_area_processed)
+            number_area_processed = enhancer.enhance(2.5)
+            
+            custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789'
+            
+            char_name = pytesseract.image_to_string(name_area).strip()
+            print_number = pytesseract.image_to_string(number_area_processed, config=custom_config).strip()
+            
+            char_name_cleaned = " ".join(re.split(r'\s+', char_name))
 
-            print(f"  [API] Nhận dạng từ Gemini API: {processed_data}")
-            return processed_data
-        else:
-            print("  [API] Phản hồi từ Gemini API không chứa dữ liệu hợp lệ.")
-            return [("Không đọc được (API)", "0"), ("Không đọc được (API)", "0"), ("Không đọc được (API)", "0")]
+            if char_name_cleaned and print_number:
+                final_results.append((char_name_cleaned, print_number))
 
-    except requests.exceptions.RequestException as e:
-        print(f"  [LỖI API] Lỗi khi gọi Gemini API: {e}")
-        return [("Lỗi API (Request)", "0"), ("Lỗi API (Request)", "0"), ("Lỗi API (Request)", "0")]
+        return final_results
+
     except Exception as e:
-        print(f"  [LỖI API] Đã xảy ra lỗi không xác định khi xử lý API: {e}")
-        return [("Lỗi API (Unknown)", "0"), ("Lỗi API (Unknown)", "0"), ("Lỗi API (Unknown)", "0")]
-
-async def get_names_from_image_upgraded(image_bytes):
-    """Hàm đọc ảnh được nâng cấp, sử dụng Gemini API."""
-    return await get_names_from_image_via_gemini_api(image_bytes)
+        print(f"  [LỖI OpenCV/Tesseract] Đã xảy ra lỗi: {e}")
+        return []
 
 # --- PHẦN CHÍNH CỦA BOT ---
 intents = discord.Intents.default()
@@ -169,36 +156,19 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.command()
 async def ping(ctx):
-    """Lệnh ping đơn giản để kiểm tra bot có hoạt động không."""
     await ctx.send("Pong!")
 
 @bot.event
 async def on_ready():
-    """Sự kiện khi bot đã đăng nhập thành công vào Discord."""
     print(f'✅ Bot Discord đã đăng nhập với tên {bot.user}')
-    print('Bot đang chạy với trình đọc ảnh nâng cấp (sử dụng Gemini API).')
+    print('Bot đang chạy với trình đọc ảnh nâng cao (OpenCV + Tesseract).')
 
 @bot.event
 async def on_message(message):
-    """
-    Sự kiện xử lý mỗi khi có tin nhắn mới.
-    Đã tích hợp cơ chế Cooldown để tránh lỗi 429.
-    """
-    global last_api_call_time
-
     await bot.process_commands(message)
     
     if not (message.author.id == KARUTA_ID and message.attachments):
         return
-
-    # <<< BẮT ĐẦU: Logic kiểm tra Cooldown >>>
-    current_time = time.time()
-    if current_time - last_api_call_time < COOLDOWN_SECONDS:
-        print(f"🔎 [COOLDOWN] Yêu cầu bị bỏ qua do còn trong thời gian chờ. Chờ {COOLDOWN_SECONDS - (current_time - last_api_call_time):.1f}s nữa.")
-        return
-    
-    last_api_call_time = current_time
-    # <<< KẾT THÚC: Logic kiểm tra Cooldown >>>
 
     attachment = message.attachments[0]
     if not attachment.content_type.startswith('image/'):
@@ -213,24 +183,22 @@ async def on_message(message):
         response.raise_for_status()
         image_bytes = response.content
 
-        character_data = await get_names_from_image_upgraded(image_bytes)
+        # <<< GỌI HÀM XỬ LÝ ẢNH NÂNG CAO >>>
+        character_data = await process_drop_dynamically(image_bytes)
         
-        print(f"  -> Kết quả nhận dạng (Tên, Mã số): {character_data}")
+        print(f"  -> Kết quả nhận dạng cuối cùng: {character_data}")
 
-        if not character_data or any(name.startswith("Lỗi API") for name, num in character_data):
-            print("  -> Lỗi API hoặc không nhận dạng được. Bỏ qua.")
-            last_api_call_time = current_time - COOLDOWN_SECONDS 
+        if not character_data:
+            print("  -> Không nhận dạng được dữ liệu nào từ ảnh. Bỏ qua.")
             print("="*40 + "\n")
-            await message.reply("Xin lỗi, tôi không thể đọc được dữ liệu từ ảnh này. Vui lòng thử lại với ảnh rõ hơn hoặc báo cáo lỗi nếu vấn đề tiếp diễn.")
             return
 
         async with message.channel.typing():
             await asyncio.sleep(1)
-
             reply_lines = []
             for i, (name, print_number) in enumerate(character_data):
-                display_name = name if name else "Không đọc được"
-                lookup_name = name.lower().strip() if name else ""
+                display_name = name
+                lookup_name = name.lower().strip()
                 
                 if lookup_name and lookup_name not in HEART_DATABASE:
                     log_new_character(name)
@@ -246,24 +214,19 @@ async def on_message(message):
 
     except requests.exceptions.RequestException as e:
         print(f"  [LỖI] Không thể tải ảnh từ URL: {e}")
-        await message.reply(f"Xin lỗi, tôi không thể tải ảnh từ URL này. Lỗi: {e}")
     except Exception as e:
         print(f"  [LỖI] Đã xảy ra lỗi không xác định: {e}")
-        await message.reply(f"Đã xảy ra lỗi khi xử lý ảnh của bạn. Lỗi: {e}")
 
     print("="*40 + "\n")
 
 
 # --- PHẦN KHỞI ĐỘNG ---
 if __name__ == "__main__":
-    if TOKEN and GEMINI_API_KEY:
-        print("✅ Đã tìm thấy DISCORD_TOKEN và GEMINI_API_KEY.")
+    if TOKEN:
+        print("✅ Đã tìm thấy DISCORD_TOKEN.")
         bot_thread = threading.Thread(target=bot.run, args=(TOKEN,))
         bot_thread.start()
         print("🚀 Khởi động Web Server để giữ bot hoạt động...")
         run_web_server()
     else:
-        if not TOKEN:
-            print("❌ LỖI: Không tìm thấy DISCORD_TOKEN trong tệp .env. Vui lòng thêm TOKEN của bot vào tệp .env.")
-        if not GEMINI_API_KEY:
-            print("❌ LỖI: Không tìm thấy GEMINI_API_KEY trong tệp .env. Vui lòng thêm key của Gemini API vào tệp .env.")
+        print("❌ LỖI: Không tìm thấy DISCORD_TOKEN trong tệp .env. Vui lòng thêm TOKEN của bot vào tệp .env.")
