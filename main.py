@@ -100,7 +100,7 @@ async def on_message(message):
         cleaned_text = full_text_content.replace('\u200b', '')
 
         # Dùng print để debug, xem bot thực sự "đọc" được gì
-        # print(f"  [DEBUG] Nội dung text thô bot đọc được:\n---\n{cleaned_text}\n---")
+        print(f"  [DEBUG] Nội dung text thô bot đọc được:\n---\n{cleaned_text}\n---")
 
         # --- BƯỚC 3: TRÍCH XUẤT DỮ LIỆU BẰNG REGEX ---
         # Mẫu regex này tìm cặp `Print` và `Tên nhân vật`
@@ -147,3 +147,4 @@ if __name__ == "__main__":
         run_web_server()
     else:
         print("❌ LỖI: Không tìm thấy DISCORD_TOKEN trong tệp .env.")
+
