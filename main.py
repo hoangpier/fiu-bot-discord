@@ -1,4 +1,4 @@
-# main.py (Phiên bản đã sửa lỗi logic)
+# main.py (Phiên bản cuối cùng - Sửa lỗi thời gian tải embed)
 import discord
 from discord.ext import commands
 import os
@@ -10,6 +10,7 @@ from PIL import Image, ImageEnhance
 from dotenv import load_dotenv
 import threading
 from flask import Flask
+import asyncio # Thêm thư viện asyncio để dùng hàm sleep
 
 # --- PHẦN 1: CẤU HÌNH WEB SERVER ---
 app = Flask(__name__)
@@ -108,9 +109,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Biến toàn cục để theo dõi các kênh đang chờ drop
-expected_drops = {}
-
 @bot.command()
 async def ping(ctx):
     await ctx.send("Pong!")
@@ -122,61 +120,64 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    # Bỏ qua các lệnh và tin nhắn không phải của Karuta
     await bot.process_commands(message)
-    if message.author.id != KARUTA_ID:
+    # Chỉ xử lý tin nhắn từ Karuta và có chứa chữ "dropping"
+    if not (message.author.id == KARUTA_ID and "dropping" in message.content):
         return
 
-    # In log chẩn đoán
+    # LOGIC MỚI: Chờ một chút để embed được tải đầy đủ
     print("\n" + "="*40)
-    print(f"🔎 [CHẨN ĐOÁN] Đã phát hiện tin nhắn từ KARUTA (Channel: {message.channel.id})")
-    print(f"  - Nội dung tin nhắn: '{message.content}'")
-    print(f"  - Có embeds không?: {bool(message.embeds)}")
+    print(f"🔎 [CHẨN ĐOÁN] Phát hiện tin nhắn drop tiềm năng từ KARUTA. Chờ 1 giây để embed tải...")
+    print(f"  - ID Tin nhắn: {message.id}")
+    
+    try:
+        # Chờ 1 giây
+        await asyncio.sleep(1)
+        
+        # Lấy lại thông tin đầy đủ của tin nhắn từ Discord
+        updated_message = await message.channel.fetch_message(message.id)
+        print("  -> Đã lấy lại tin nhắn cập nhật.")
 
-    # BƯỚC 1: Nếu là tin nhắn thông báo, đánh dấu để chờ đợi
-    if "dropping" in message.content:
-        print(f"  -> LÀ TIN NHẮN THÔNG BÁO. Đang chờ ảnh drop trong kênh {message.channel.id}")
-        expected_drops[message.channel.id] = True # Đánh dấu kênh này đang chờ drop
-        print("="*40 + "\n")
-        return # Dừng lại và chờ tin nhắn ảnh
+        # Bây giờ, kiểm tra embed trên tin nhắn đã được cập nhật
+        if updated_message.embeds:
+            print("  -> Embed đã được tìm thấy! Bắt đầu xử lý...")
+            embed = updated_message.embeds[0]
+            
+            character_names = []
+            if embed.image and embed.image.url:
+                print("    -> Đây là Drop dạng Ảnh. Sử dụng OCR...")
+                character_names = get_names_from_image(embed.image.url)
+            elif embed.fields:
+                print("    -> Đây là Drop dạng Chữ/Embed. Đọc dữ liệu fields...")
+                character_names = get_names_from_embed_fields(embed)
 
-    # BƯỚC 2: Nếu kênh này đang được chờ và tin nhắn có ảnh, thì xử lý
-    if expected_drops.get(message.channel.id) and message.embeds:
-        print("  -> ĐÂY LÀ TIN NHẮN DROP ĐƯỢC MONG CHỜ. BẮT ĐẦU XỬ LÝ...")
-        expected_drops[message.channel.id] = False # Xử lý xong, xóa đánh dấu
+            while len(character_names) < 3:
+                character_names.append("")
 
-        embed = message.embeds[0]
-        character_names = []
+            print(f"    -> Kết quả nhận dạng tên: {character_names}")
 
-        if embed.image and embed.image.url:
-            print("    -> Đây là Drop dạng Ảnh. Sử dụng OCR...")
-            character_names = get_names_from_image(embed.image.url)
-        elif embed.fields:
-            print("    -> Đây là Drop dạng Chữ/Embed. Đọc dữ liệu fields...")
-            character_names = get_names_from_embed_fields(embed)
+            async with updated_message.channel.typing():
+                reply_lines = []
+                for i in range(3):
+                    name = character_names[i]
+                    display_name = name if name else "Không đọc được"
+                    lookup_name = name.lower().strip() if name else ""
+                    if lookup_name and lookup_name not in HEART_DATABASE:
+                        log_new_character(name)
+                    heart_value = HEART_DATABASE.get(lookup_name, 0)
+                    heart_display = f"{heart_value:,}" if heart_value > 0 else "N/A"
+                    reply_lines.append(f"{i+1} | ♡**{heart_display}** · `{display_name}`")
+                reply_content = "\n".join(reply_lines)
+                await updated_message.reply(reply_content)
+                print("✅ ĐÃ GỬI PHẢN HỒI THÀNH CÔNG")
 
-        while len(character_names) < 3:
-            character_names.append("")
+        else:
+            print("  -> Sau khi chờ, vẫn không tìm thấy embed. Bỏ qua.")
 
-        print(f"    -> Kết quả nhận dạng tên: {character_names}")
-
-        async with message.channel.typing():
-            reply_lines = []
-            for i in range(3):
-                name = character_names[i]
-                display_name = name if name else "Không đọc được"
-                lookup_name = name.lower().strip() if name else ""
-                if lookup_name and lookup_name not in HEART_DATABASE:
-                    log_new_character(name)
-                heart_value = HEART_DATABASE.get(lookup_name, 0)
-                heart_display = f"{heart_value:,}" if heart_value > 0 else "N/A"
-                reply_lines.append(f"{i+1} | ♡**{heart_display}** · `{display_name}`")
-            reply_content = "\n".join(reply_lines)
-            await message.reply(reply_content)
-            print("✅ ĐÃ GỬI PHẢN HỒI THÀNH CÔNG")
-    else:
-        # Nếu là một tin nhắn khác từ Karuta không phải drop, bỏ qua
-        print("  -> Tin nhắn từ Karuta nhưng không phải là drop đang chờ. Bỏ qua.")
+    except discord.NotFound:
+        print("  -> Tin nhắn đã bị xóa trong khi chờ. Bỏ qua.")
+    except Exception as e:
+        print(f"  -> Đã xảy ra lỗi khi xử lý: {e}")
 
     print("="*40 + "\n")
 
