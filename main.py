@@ -1,19 +1,14 @@
-# main.py (Phiên bản OCR Tại Chỗ - Sử dụng PIL + Tesseract)
+# main.py (Phiên bản Embed - Siêu nhanh, không cần OCR)
 
 import discord
 from discord.ext import commands
 import os
-import re
-import requests
-import io
-from PIL import Image
+import re # Thư viện cần thiết để trích xuất dữ liệu
 from dotenv import load_dotenv
 import threading
 from flask import Flask
-import asyncio
-import pytesseract
 
-# --- PHẦN 1: CẤU HÌNH WEB SERVER ---
+# --- PHẦN 1: CẤU HÌNH WEB SERVER (Giữ nguyên) ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -29,10 +24,6 @@ def run_web_server():
 # --- PHẦN 2: CẤU HÌNH VÀ CÁC HÀM CỦA BOT DISCORD ---
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
-
-# <<< THÊM: Cấu hình Tesseract nếu cần >>>
-# Ví dụ trên Windows:
-# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 KARUTA_ID = 646937666251915264
 NEW_CHARACTERS_FILE = "new_characters.txt"
@@ -76,103 +67,56 @@ def log_new_character(character_name):
     except Exception as e:
         print(f"Lỗi khi đang lưu nhân vật mới: {e}")
 
-async def get_names_from_image_ocr(image_bytes):
-    """
-    Sử dụng PIL để cắt ảnh và Tesseract để đọc chữ.
-    Logic dựa trên file docanh.py.
-    """
-    try:
-        img = Image.open(io.BytesIO(image_bytes))
-        width, height = img.size
-        
-        # Giả sử kích thước ảnh drop 3 thẻ là 836x312
-        if width < 830 or height < 300:
-            print(f"  [OCR] Kích thước ảnh không phù hợp ({width}x{height}), bỏ qua.")
-            return []
-
-        # Tọa độ và kích thước cố định cho mỗi thẻ
-        card_width = 278
-        card_height = 248
-        x_coords = [0, 279, 558] # Tọa độ x bắt đầu của mỗi thẻ
-        y_offset = 32            # Tọa độ y bắt đầu của các thẻ
-
-        processed_data = []
-
-        for i in range(3): # Xử lý 3 thẻ
-            # Cắt ảnh thẻ
-            box = (x_coords[i], y_offset, x_coords[i] + card_width, y_offset + card_height)
-            card_img = img.crop(box)
-
-            # Cắt lấy vùng tên nhân vật
-            top_box = (20, 20, card_width - 20, 60)
-            top_img = card_img.crop(top_box)
-            
-            # Cắt lấy vùng mã số
-            print_box = (100, card_height - 30, card_width - 20, card_height - 10)
-            print_img = card_img.crop(print_box)
-
-            # Đọc chữ bằng Tesseract
-            char_name_config = r"--psm 7 --oem 3"
-            print_num_config = r"--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789"
-
-            char_name = pytesseract.image_to_string(top_img, config=char_name_config).strip().replace("\n", " ")
-            print_number = pytesseract.image_to_string(print_img, config=print_num_config).strip()
-            
-            if char_name:
-                processed_data.append((char_name, print_number or "???"))
-
-        print(f"  [OCR] Kết quả nhận dạng: {processed_data}")
-        return processed_data
-
-    except Exception as e:
-        print(f"  [LỖI OCR] Đã xảy ra lỗi khi xử lý ảnh: {e}")
-        return []
+# <<< BỎ HOÀN TOÀN HÀM get_names_from_image_ocr >>>
 
 # --- PHẦN CHÍNH CỦA BOT ---
 intents = discord.Intents.default()
-intents.message_content = True
+intents.message_content = True # Vẫn cần để đọc nội dung tin nhắn cơ bản
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
     """Sự kiện khi bot đã đăng nhập thành công vào Discord."""
     print(f'✅ Bot Discord đã đăng nhập với tên {bot.user}')
-    print('Bot đang chạy với trình đọc ảnh OCR Tại Chỗ (PIL + Tesseract).')
+    print('Bot đang chạy với phương pháp đọc Embed siêu tốc.')
 
 @bot.event
 async def on_message(message):
     """Sự kiện xử lý mỗi khi có tin nhắn mới."""
-    if not (message.author.id == KARUTA_ID and message.attachments):
+    # Chỉ xử lý tin nhắn từ Karuta và tin nhắn đó phải có Embed
+    if not (message.author.id == KARUTA_ID and message.embeds):
         return
-    
-    attachment = message.attachments[0]
-    if not attachment.content_type.startswith('image/'):
-        return
-
-    print("\n" + "="*40)
-    print(f"🔎 [LOG] Phát hiện ảnh drop từ KARUTA. Bắt đầu xử lý OCR...")
-    print(f"  - URL ảnh: {attachment.url}")
 
     try:
-        response = requests.get(attachment.url)
-        response.raise_for_status()
-        image_bytes = response.content
+        # Lấy embed đầu tiên từ tin nhắn
+        embed = message.embeds[0]
 
-        character_data = await get_names_from_image_ocr(image_bytes)
+        # Karuta drop embed thường có thông tin trong 'description'
+        if not embed.description:
+            return
         
-        print(f"  -> Kết quả nhận dạng cuối cùng: {character_data}")
+        print("\n" + "="*40)
+        print(f"🔎 [LOG] Phát hiện drop embed từ KARUTA. Bắt đầu xử lý...")
 
-        if not character_data:
-            print("  -> Không nhận dạng được dữ liệu nào từ ảnh. Bỏ qua.")
+        # Sử dụng regex để tìm tất cả các dòng chứa thông tin thẻ
+        # Mẫu: `Print` · icon · `Tên nhân vật` · Tên series
+        pattern = r"`#(\d+)`.*· `(.*?)`"
+        matches = re.findall(pattern, embed.description)
+
+        if not matches:
+            print("  -> Không tìm thấy dữ liệu thẻ hợp lệ trong embed. Bỏ qua.")
             print("="*40 + "\n")
             return
+        
+        # Dữ liệu character_data bây giờ là một danh sách các cặp (tên, print)
+        character_data = [(name, print_num) for print_num, name in matches]
+        print(f"  -> Dữ liệu trích xuất: {character_data}")
 
         async with message.channel.typing():
-            # <<< DÒNG NÀY ĐÃ BỊ XÓA >>>
             reply_lines = []
             for i, (name, print_number) in enumerate(character_data):
-                display_name = name if name else "Không đọc được"
-                lookup_name = name.lower().strip() if name else ""
+                display_name = name
+                lookup_name = name.lower().strip()
                 
                 if lookup_name and lookup_name not in HEART_DATABASE:
                     log_new_character(name)
@@ -183,12 +127,14 @@ async def on_message(message):
                 reply_lines.append(f"{i+1} | ♡**{heart_display}** · `{display_name}` `#{print_number}`")
             
             reply_content = "\n".join(reply_lines)
-            await message.reply(reply_content)
+            await message.reply(reply_content, mention_author=False) # mention_author=False để không ping người dùng
             print("✅ ĐÃ GỬI PHẢN HỒI THÀNH CÔNG")
 
     except Exception as e:
-        print(f"  [LỖI] Đã xảy ra lỗi không xác định: {e}")
+        print(f"  [LỖI] Đã xảy ra lỗi không xác định khi xử lý embed: {e}")
+    
     print("="*40 + "\n")
+
 
 # --- PHẦN KHỞI ĐỘNG ---
 if __name__ == "__main__":
