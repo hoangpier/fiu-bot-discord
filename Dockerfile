@@ -9,7 +9,7 @@ RUN apt-get update && \
         tesseract-ocr \
         tesseract-ocr-eng \
         # Các gói phụ thuộc chính cho OpenCV
-        libgl1-mesa-glx \
+        libgl1 \
         libglib2.0-0 \
         libsm6 \
         libxext6 \
