@@ -1,4 +1,4 @@
-# main.py (Phiên bản kết hợp logic xử lý ảnh nâng cao)
+# main.py (Phiên bản Chẩn đoán Sâu)
 import discord
 from discord.ext import commands
 import os
@@ -50,75 +50,39 @@ def load_heart_data(file_path):
 
 HEART_DATABASE = load_heart_data("tennhanvatvasotim.txt")
 
-def log_new_character(character_name, series_name):
-    """Lưu tên nhân vật và series mới vào file."""
+def log_new_character(character_name):
     try:
-        log_entry = f"{character_name} · {series_name}"
         existing_names = set()
         if os.path.exists(NEW_CHARACTERS_FILE):
             with open(NEW_CHARACTERS_FILE, 'r', encoding='utf-8') as f:
                 existing_names = set(line.strip().lower() for line in f)
-        
-        if log_entry.lower() not in existing_names:
+        if character_name and character_name.lower() not in existing_names:
             with open(NEW_CHARACTERS_FILE, 'a', encoding='utf-8') as f:
-                f.write(f"{log_entry}\n")
-            print(f"⭐ Đã phát hiện và lưu nhân vật mới: {log_entry}")
+                f.write(f"{character_name}\n")
+            print(f"⭐ Đã phát hiện và lưu nhân vật mới: {character_name}")
     except Exception as e:
         print(f"Lỗi khi đang lưu nhân vật mới: {e}")
 
-# --- LOGIC XỬ LÝ ẢNH NÂNG CAO (TỪ DOCANH.PY) ---
-def get_card_info_from_image(image_url):
-    """
-    Hàm kết hợp: Tải ảnh, nhận diện drop 3/4 thẻ, cắt và đọc OCR trong bộ nhớ.
-    Trả về một danh sách các dictionary, mỗi dictionary chứa 'character' và 'series'.
-    """
+def get_names_from_image(image_url):
     try:
         response = requests.get(image_url)
-        if response.status_code != 200:
-            print("Lỗi: Không thể tải ảnh từ URL.")
-            return []
-        
-        img = Image.open(io.BytesIO(response.content))
-        width, height = img.size
-        card_count = 0
-        card_width, card_height = 278, 248
-
-        # Nhận diện loại drop dựa trên kích thước ảnh
-        if width >= 834 and height >= 248 and height < 300: # Drop 3 thẻ
-            card_count = 3
-        elif width >= 834 and height >= 330 and height < 400: # Drop 4 thẻ
-            card_count = 4
-        else:
-            print(f"Kích thước ảnh không được hỗ trợ: {width}x{height}")
-            return []
-
-        print(f"  -> Phát hiện {card_count} thẻ trong ảnh.")
-
-        all_card_info = []
-        x_coords = [0, 279, 558, 0] # Tọa độ x cho mỗi thẻ
-        custom_config = r"--psm 7 --oem 3" # Cấu hình OCR cho một dòng văn bản
-
-        for i in range(card_count):
-            y_offset = 0 if i < 3 else card_height + 2
-            box = (x_coords[i], y_offset, x_coords[i] + card_width, y_offset + card_height)
-            card_img = img.crop(box)
-
-            # Cắt và đọc tên nhân vật (phía trên)
-            top_box = (15, 15, card_width - 15, 50)
-            top_img = ImageEnhance.Contrast(card_img.crop(top_box).convert('L')).enhance(2.0)
-            char_text = pytesseract.image_to_string(top_img, config=custom_config).strip().replace("\n", " ")
-
-            # Cắt và đọc tên anime (phía dưới)
-            bottom_box = (15, card_height - 55, card_width - 15, card_height - 15)
-            bottom_img = ImageEnhance.Contrast(card_img.crop(bottom_box).convert('L')).enhance(2.0)
-            anime_text = pytesseract.image_to_string(bottom_img, config=custom_config).strip().replace("\n", " ")
-            
-            all_card_info.append({"character": char_text, "series": anime_text})
-
-        return all_card_info
-
+        if response.status_code != 200: return []
+        main_image = Image.open(io.BytesIO(response.content))
+        img_width, img_height = main_image.size
+        card_width = img_width // 3
+        extracted_names = []
+        for i in range(3):
+            left, right = i * card_width, (i + 1) * card_width
+            card_image = main_image.crop((left, 0, right, img_height))
+            name_region = card_image.crop((20, 30, card_width - 40, 100))
+            processed_region = ImageEnhance.Contrast(card_image.convert('L')).enhance(2.0)
+            custom_config = r'--oem 3 --psm 6'
+            text = pytesseract.image_to_string(processed_region, config=custom_config)
+            cleaned_name = text.split('\n')[0].strip()
+            extracted_names.append(cleaned_name)
+        return extracted_names
     except Exception as e:
-        print(f"Lỗi nghiêm trọng trong quá trình xử lý ảnh: {e}")
+        print(f"  [CHẨN ĐOÁN] Lỗi trong quá trình xử lý ảnh: {e}")
         return []
 
 def get_names_from_embed_fields(embed):
@@ -127,10 +91,10 @@ def get_names_from_embed_fields(embed):
         for field in embed.fields:
             match = re.search(r'\*\*(.*?)\*\*', field.value)
             if match:
-                extracted_names.append({"character": match.group(1).strip(), "series": "N/A"})
+                extracted_names.append(match.group(1).strip())
         return extracted_names
     except Exception as e:
-        print(f"Lỗi khi xử lý embed fields: {e}")
+        print(f"  [CHẨN ĐOÁN] Lỗi khi xử lý embed fields: {e}")
         return []
 
 # --- PHẦN CHÍNH CỦA BOT ---
@@ -138,63 +102,81 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-@bot.event
-async def on_ready():
-    print(f'✅ Bot Discord đã đăng nhập với tên {bot.user}')
+processed_message_ids = set() 
 
 async def process_karuta_drop(message):
+    if message.id in processed_message_ids:
+        print(f"  [CHẨN ĐOÁN] Bỏ qua tin nhắn ID {message.id} vì đã xử lý rồi.")
+        return
+    
     embed = message.embeds[0]
-    card_data = []
-    print(f"🔎 Phát hiện drop từ Karuta. Bắt đầu xử lý...")
+    character_names = []
+    print(f"🔎 Bắt đầu xử lý drop cho tin nhắn ID: {message.id}")
 
     if embed.image and embed.image.url:
-        print("  -> Đây là Drop dạng Ảnh. Sử dụng logic OCR nâng cao...")
-        card_data = get_card_info_from_image(embed.image.url)
+        print("  -> Đây là Drop dạng Ảnh. Sử dụng OCR...")
+        character_names = get_names_from_image(embed.image.url)
     elif embed.fields:
         print("  -> Đây là Drop dạng Chữ/Embed. Đọc dữ liệu fields...")
-        card_data = get_names_from_embed_fields(embed)
+        character_names = get_names_from_embed_fields(embed)
 
-    if not card_data:
-        print("  Lỗi: Không thể trích xuất thông tin thẻ từ drop.")
-        return
+    while len(character_names) < 3:
+        character_names.append("")
 
-    print("  -> Kết quả nhận dạng:")
-    for i, card in enumerate(card_data):
-        print(f"    Thẻ {i+1}: {card.get('character', 'Lỗi')} · {card.get('series', 'Lỗi')}")
+    print(f"  Nhận dạng các tên: {character_names}")
 
     async with message.channel.typing():
         reply_lines = []
-        for i, card in enumerate(card_data):
-            name = card.get("character")
-            series = card.get("series")
-            
+        for i in range(3):
+            name = character_names[i]
             display_name = name if name else "Không đọc được"
             lookup_name = name.lower().strip() if name else ""
-            
             if lookup_name and lookup_name not in HEART_DATABASE:
-                log_new_character(name, series)
-            
+                log_new_character(name)
             heart_value = HEART_DATABASE.get(lookup_name, 0)
             heart_display = f"{heart_value:,}" if heart_value > 0 else "N/A"
-            
             reply_lines.append(f"{i+1} | ♡**{heart_display}** · `{display_name}`")
-
         reply_content = "\n".join(reply_lines)
         await message.reply(reply_content)
-        print("✅ Đã gửi phản hồi thành công.")
+        processed_message_ids.add(message.id)
+        print(f"✅ Đã gửi phản hồi thành công cho tin nhắn ID: {message.id}")
 
+@bot.event
+async def on_ready():
+    print(f'✅ Bot Discord đã đăng nhập với tên {bot.user}')
+    print('Bot đang chạy ở chế độ CHẨN ĐOÁN SÂU.')
+
+# <<< DÒNG CHẨN ĐOÁN BẮT ĐẦU TỪ ĐÂY >>>
 @bot.event
 async def on_message(message):
-    if message.author.id == KARUTA_ID and "dropping" in message.content and message.embeds:
-        await process_karuta_drop(message)
-
+    if message.author.id == KARUTA_ID:
+        print("\n" + "="*50)
+        print(f"🔥 SỰ KIỆN ON_MESSAGE TỪ KARUTA (ID: {message.id})")
+        print(f"  - Nội dung: '{message.content}'")
+        print(f"  - Có embeds không?: {bool(message.embeds)}")
+        if message.embeds:
+            print(f"  - Embed[0] có ảnh không?: {bool(message.embeds[0].image.url if message.embeds[0].image else False)}")
+        
+        if "dropping" in message.content and message.embeds:
+            await process_karuta_drop(message)
+        print("="*50 + "\n")
+# <<< DÒNG CHẨN ĐOÁN TIẾP TỤC Ở ĐÂY >>>
 @bot.event
 async def on_message_edit(before, after):
-    if after.author.id == KARUTA_ID and "dropping" in after.content and after.embeds:
-        if not before.embeds:
-            await process_karuta_drop(after)
+    if after.author.id == KARUTA_ID:
+        print("\n" + "="*50)
+        print(f"🔥 SỰ KIỆN ON_MESSAGE_EDIT TỪ KARUTA (ID: {after.id})")
+        print(f"  - Nội dung: '{after.content}'")
+        print(f"  - TRƯỚC: Có embeds không?: {bool(before.embeds)}")
+        print(f"  - SAU: Có embeds không?: {bool(after.embeds)}")
+        if after.embeds:
+            print(f"  - SAU: Embed[0] có ảnh không?: {bool(after.embeds[0].image.url if after.embeds[0].image else False)}")
 
-# --- PHẦN KHỞI ĐỘNG ---
+        if "dropping" in after.content and after.embeds:
+            await process_karuta_drop(after)
+        print("="*50 + "\n")
+
+# --- PHẦN 3: KHỞI ĐỘNG BOT VÀ WEB SERVER ---
 if __name__ == "__main__":
     if TOKEN:
         bot_thread = threading.Thread(target=bot.run, args=(TOKEN,))
