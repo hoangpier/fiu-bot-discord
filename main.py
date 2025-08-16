@@ -114,14 +114,12 @@ async def get_names_from_image_via_gemini_api(image_bytes):
         }
         
         # Cấu hình API key và URL
-        # API key sẽ được Canvas cung cấp tự động khi để trống
         apiKey = "" 
         apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=" + apiKey
 
         print("  [API] Đang gửi ảnh đến Gemini API để nhận dạng...")
         
         # Gửi yêu cầu đến Gemini API
-        # Sử dụng requests.post thay vì fetch trong Python
         response = requests.post(apiUrl, headers={'Content-Type': 'application/json'}, json=payload)
         response.raise_for_status() # Báo lỗi nếu có lỗi HTTP
 
@@ -162,13 +160,14 @@ async def get_names_from_image_via_gemini_api(image_bytes):
         return ["Lỗi API (Thẻ 1)", "Lỗi API (Thẻ 2)", "Lỗi API (Thẻ 3)"]
 
 
-def get_names_from_image_upgraded(image_bytes):
+async def get_names_from_image_upgraded(image_bytes): # <<< Đã thêm 'async' vào đây
     """
     Hàm đọc ảnh được nâng cấp.
     Đã được thay đổi để sử dụng Gemini API thay vì Tesseract cục bộ.
     """
     # Gọi hàm sử dụng Gemini API
-    return asyncio.run(get_names_from_image_via_gemini_api(image_bytes))
+    # >>> Đã thay đổi asyncio.run() thành await <<<
+    return await get_names_from_image_via_gemini_api(image_bytes)
 
 
 # --- PHẦN CHÍNH CỦA BOT ---
@@ -213,7 +212,8 @@ async def on_message(message):
         image_bytes = response.content
 
         # Gọi hàm xử lý ảnh nâng cấp (hiện tại sử dụng Gemini API)
-        character_names = get_names_from_image_upgraded(image_bytes)
+        # >>> Đã thêm 'await' vào đây <<<
+        character_names = await get_names_from_image_upgraded(image_bytes)
         
         print(f"  -> Kết quả nhận dạng tên: {character_names}")
 
