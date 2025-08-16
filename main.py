@@ -67,50 +67,48 @@ def log_new_character(character_name):
 
 def get_names_from_image_upgraded(image_bytes):
     """
-    Hàm đọc ảnh được nâng cấp với kỹ thuật cắt ảnh chính xác và OCR cải tiến.
+    Hàm đọc ảnh được nâng cấp với kỹ thuật cắt ảnh và xử lý ảnh tiên tiến hơn.
     """
     try:
         main_image = Image.open(io.BytesIO(image_bytes))
         width, height = main_image.size
 
-        # Giả định drop 3 thẻ dựa trên kích thước ảnh của Karuta
         if not (width > 800 and height > 200):
             print(f"  [LOG] Kích thước ảnh không giống ảnh drop: {width}x{height}")
             return []
 
-        card_width = 278 # Chiều rộng chuẩn của 1 thẻ Karuta
-        card_height = 248 # Chiều cao chuẩn của 1 thẻ Karuta
-        x_coords = [0, 279, 558] # Tọa độ x bắt đầu của mỗi thẻ
+        card_width = 278
+        card_height = 248
+        x_coords = [0, 279, 558]
 
         extracted_names = []
-        
-        # Cấu hình OCR nâng cao học từ file doc.py
-        custom_config = r'--psm 6 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 '
+        custom_config = r'--psm 7 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 '
 
         for i in range(3):
-            # Bước 1: Cắt thẻ bài riêng lẻ
             card_box = (x_coords[i], 0, x_coords[i] + card_width, card_height)
             card_img = main_image.crop(card_box)
 
-            # Bước 2: Cắt vùng tên nhân vật từ thẻ bài
-            # Tọa độ này được tinh chỉnh dựa trên file docanh.py
             name_box = (15, 15, card_width - 15, 60)
             name_img = card_img.crop(name_box)
 
-            # Tiền xử lý ảnh để tăng độ nét
-            name_img = name_img.convert('L') # Chuyển sang ảnh xám
+            # --- PHẦN NÂNG CẤP ---
+            # 1. Chuyển sang ảnh xám
+            name_img = name_img.convert('L')
+            # 2. Tăng độ tương phản
             enhancer = ImageEnhance.Contrast(name_img)
-            name_img = enhancer.enhance(2.0) # Tăng độ tương phản
+            name_img = enhancer.enhance(2.5)
+            # 3. Lọc đen trắng (Thresholding) - Giúp loại bỏ nền nhiễu
+            threshold = 120 # Bạn có thể thử thay đổi giá trị này, từ 100 đến 150
+            name_img = name_img.point(lambda p: 255 if p > threshold else 0)
+            # --------------------
 
-            # Bước 3: Nhận diện ký tự
             text = pytesseract.image_to_string(name_img, config=custom_config)
-            cleaned_name = text.strip().replace("\n", " ") # Dọn dẹp tên
+            cleaned_name = text.strip().replace("\n", " ")
             
-            # Đôi khi OCR đọc ra ký tự rác, lọc những tên quá ngắn
-            if len(cleaned_name) > 1:
+            if len(cleaned_name) > 2: # Tăng yêu cầu độ dài tên để lọc rác tốt hơn
                 extracted_names.append(cleaned_name)
             else:
-                extracted_names.append("") # Nếu không đọc được thì cho là rỗng
+                extracted_names.append("")
 
         return extracted_names
     except Exception as e:
@@ -202,3 +200,4 @@ if __name__ == "__main__":
         run_web_server()
     else:
         print("LỖI: Không tìm thấy DISCORD_TOKEN trong tệp .env.")
+
