@@ -1,9 +1,10 @@
-# main.py (Phiên bản OCR Tại Chỗ - Đã khắc phục lỗi "Can't keep up")
+# main.py (Phiên bản OCR Tại Chỗ - Tọa độ từ docanh.py)
 
 import discord
 from discord.ext import commands
 import os
 import re
+import requests
 import io
 from PIL import Image
 from dotenv import load_dotenv
@@ -11,7 +12,6 @@ import threading
 from flask import Flask
 import asyncio
 import pytesseract
-import aiohttp # <<< THÊM: Thư viện tải ảnh bất đồng bộ
 
 # --- PHẦN 1: CẤU HÌNH WEB SERVER ---
 app = Flask(__name__)
@@ -74,42 +74,52 @@ def log_new_character(character_name):
     except Exception as e:
         print(f"Lỗi khi đang lưu nhân vật mới: {e}")
 
-# <<< THAY ĐỔI: Chuyển hàm xử lý ảnh thành hàm thường (bỏ "async") >>>
-def get_names_from_image_ocr(image_bytes):
+# <<< THAY THẾ HOÀN TOÀN: Hàm xử lý ảnh với logic và tọa độ từ docanh.py >>>
+async def get_names_from_image_ocr(image_bytes):
     """
     Sử dụng PIL để cắt ảnh và Tesseract để đọc chữ.
-    Sử dụng tọa độ được chuẩn hóa theo file docanh.py.
+    Logic và tọa độ được chuyển từ file docanh.py.
     """
     try:
         img = Image.open(io.BytesIO(image_bytes))
         width, height = img.size
         
-        # Giữ nguyên kiểm tra kích thước
-        if width < 830 or height < 300:
-            print(f"  [OCR] Kích thước ảnh không phù hợp ({width}x{height}), bỏ qua.")
+        card_count = 0
+        card_width, card_height = 278, 248
+
+        # Logic phát hiện số thẻ từ docanh.py
+        if width >= 834 and height >= 248 and height < 300: # Drop 3 thẻ
+            card_count = 3
+        elif width >= 834 and height >= 330 and height < 400: # Drop 4 thẻ
+            card_count = 4
+        else:
+            print(f"Kích thước ảnh không được hỗ trợ: {width}x{height}")
             return []
 
-        # Tọa độ và kích thước cố định từ file docanh.py
-        card_width = 278
-        card_height = 248
-        x_coords = [0, 279, 558] 
-        y_offset = 0  # <<< THAY ĐỔI: Giả định không có khoảng trống trên >>>
+        print(f"  [OCR] Phát hiện {card_count} thẻ trong ảnh.")
+
+        # Tọa độ từ docanh.py
+        x_coords = [0, 279, 558, 0]
 
         processed_data = []
 
-        for i in range(3):
+        for i in range(card_count):
+            # Logic tọa độ y từ docanh.py
+            y_offset = 0 if i < 3 else card_height + 2
+
+            # Tọa độ vùng cắt thẻ
             box = (x_coords[i], y_offset, x_coords[i] + card_width, y_offset + card_height)
             card_img = img.crop(box)
 
-            # <<< THAY ĐỔI: Sử dụng tọa độ crop tên nhân vật từ docanh.py >>>
+            # Tọa độ vùng tên nhân vật từ docanh.py
             top_box = (15, 15, card_width - 15, 50)
             top_img = card_img.crop(top_box)
             
-            # <<< TỰ ƯỚC LƯỢNG: Tọa độ cho mã số dựa trên cấu trúc của docanh.py >>>
-            # Bạn có thể cần tinh chỉnh lại vùng này
+            # Giữ nguyên tọa độ vùng mã số (vì docanh.py không có)
             print_box = (100, card_height - 30, card_width - 20, card_height - 10)
             print_img = card_img.crop(print_box)
 
+            # Đọc chữ bằng Tesseract
             char_name_config = r"--psm 6 --oem 3"
             print_num_config = r"--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789"
 
@@ -133,8 +143,9 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
+    """Sự kiện khi bot đã đăng nhập thành công vào Discord."""
     print(f'✅ Bot Discord đã đăng nhập với tên {bot.user}')
-    print('Bot đang chạy với trình đọc ảnh OCR Tại Chỗ (Đã tối ưu hóa).')
+    print('Bot đang chạy với trình đọc ảnh OCR Tại Chỗ (PIL + Tesseract).')
 
 @bot.event
 async def on_message(message):
@@ -146,22 +157,15 @@ async def on_message(message):
         return
 
     print("\n" + "="*40)
-    print(f"🔎 [LOG] Phát hiện ảnh drop từ KARUTA. Bắt đầu xử lý...")
+    print(f"🔎 [LOG] Phát hiện ảnh drop từ KARUTA. Bắt đầu xử lý OCR...")
     print(f"  - URL ảnh: {attachment.url}")
 
     try:
-        # <<< THAY ĐỔI: Dùng aiohttp để tải ảnh không bị "đóng băng" >>>
-        async with aiohttp.ClientSession() as session:
-            async with session.get(attachment.url) as response:
-                if response.status != 200:
-                    print(f"  [LỖI] Không thể tải ảnh, status code: {response.status}")
-                    return
-                image_bytes = await response.read()
+        response = requests.get(attachment.url)
+        response.raise_for_status()
+        image_bytes = response.content
 
-        # <<< THAY ĐỔI: Chạy hàm OCR nặng trong một luồng riêng >>>
-        character_data = await bot.loop.run_in_executor(
-            None, get_names_from_image_ocr, image_bytes
-        )
+        character_data = await get_names_from_image_ocr(image_bytes)
         
         print(f"  -> Kết quả nhận dạng cuối cùng: {character_data}")
 
