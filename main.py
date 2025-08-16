@@ -1,4 +1,4 @@
-# main.py (Phiên bản Embed v2 - Xử lý nhiều định dạng)
+# main.py (Phiên bản v3 - Thám tử Embed)
 
 import discord
 from discord.ext import commands
@@ -71,7 +71,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @bot.event
 async def on_ready():
     print(f'✅ Bot Discord đã đăng nhập với tên {bot.user}')
-    print('Bot đang chạy với bộ xử lý Embed v2 thông minh.')
+    print('Bot đang chạy với bộ xử lý Thám tử Embed v3.')
 
 @bot.event
 async def on_message(message):
@@ -80,54 +80,54 @@ async def on_message(message):
 
     try:
         embed = message.embeds[0]
-        character_data = []
-
+        
         print("\n" + "="*40)
-        print(f"🔎 [LOG] Phát hiện embed từ KARUTA. Bắt đầu phân tích...")
+        print(f"🔎 [LOG] Phát hiện embed từ KARUTA. Khởi động chế độ thám tử...")
 
-        # --- LOGIC MỚI: KIỂM TRA NHIỀU NƠI ---
+        # --- BƯỚC 1: GOM TẤT CẢ TEXT TỪ MỌI NGÓC NGÁCH ---
+        text_sources = []
+        if embed.title: text_sources.append(embed.title)
+        if embed.description: text_sources.append(embed.description)
+        if embed.footer.text: text_sources.append(embed.footer.text)
+        if embed.author.name: text_sources.append(embed.author.name)
+        for field in embed.fields:
+            if field.name: text_sources.append(field.name)
+            if field.value: text_sources.append(field.value)
+        
+        # --- BƯỚC 2: KẾT HỢP VÀ "RỬA" SẠCH TEXT ---
+        full_text_content = "\n".join(text_sources)
+        # Loại bỏ ký tự không chiều rộng (zero-width space), một cách phổ biến để ẩn text
+        cleaned_text = full_text_content.replace('\u200b', '')
 
-        # Cách 1: Kiểm tra trong 'description' (cho các drop dạng danh sách)
-        if embed.description:
-            print("  -> Tìm thấy 'description'. Đang phân tích theo dạng danh sách...")
-            pattern = r"`#(\d+)`.*· `(.*?)`"
-            matches = re.findall(pattern, embed.description)
-            if matches:
-                character_data = [(name, print_num) for print_num, name in matches]
+        # Dùng print để debug, xem bot thực sự "đọc" được gì
+        # print(f"  [DEBUG] Nội dung text thô bot đọc được:\n---\n{cleaned_text}\n---")
 
-        # Cách 2: Nếu không có trong description, kiểm tra trong 'fields' (cho các drop dạng cột)
-        if not character_data and embed.fields:
-            print("  -> 'description' trống. Chuyển sang phân tích 'fields'...")
-            for field in embed.fields:
-                char_name = field.name
-                print_match = re.search(r'#(\d+)', field.value)
-                if char_name and print_match:
-                    print_number = print_match.group(1)
-                    character_data.append((char_name, print_number))
-
-        # --- KẾT THÚC LOGIC MỚI ---
+        # --- BƯỚC 3: TRÍCH XUẤT DỮ LIỆU BẰNG REGEX ---
+        # Mẫu regex này tìm cặp `Print` và `Tên nhân vật`
+        pattern = r"`#(\d+)`.*· `(.*?)`"
+        matches = re.findall(pattern, cleaned_text)
+        
+        character_data = []
+        if matches:
+            character_data = [(name, print_num) for print_num, name in matches]
 
         if not character_data:
-            print("  -> Không tìm thấy dữ liệu nhân vật dạng text trong embed. Bỏ qua.")
+            print("  -> Đã quét toàn bộ embed nhưng không tìm thấy dữ liệu hợp lệ. Bỏ qua.")
             print("="*40 + "\n")
             return
         
-        print(f"  -> Dữ liệu trích xuất thành công: {character_data}")
+        print(f"  -> Trích xuất thành công: {character_data}")
 
+        # Gửi phản hồi (giữ nguyên như cũ)
         async with message.channel.typing():
             reply_lines = []
             for i, (name, print_number) in enumerate(character_data):
                 display_name = name
                 lookup_name = name.lower().strip()
-                
-                if lookup_name and lookup_name not in HEART_DATABASE:
-                    log_new_character(name)
-
+                if lookup_name and lookup_name not in HEART_DATABASE: log_new_character(name)
                 heart_value = HEART_DATABASE.get(lookup_name, 0)
                 heart_display = f"{heart_value:,}" if heart_value > 0 else "N/A"
-                
                 reply_lines.append(f"{i+1} | ♡**{heart_display}** · `{display_name}` `#{print_number}`")
-            
             reply_content = "\n".join(reply_lines)
             await message.reply(reply_content, mention_author=False)
             print("✅ ĐÃ GỬI PHẢN HỒI THÀNH CÔNG")
