@@ -158,9 +158,10 @@ def get_names_from_embed_fields(embed):
         return []
 
 # --- PHẦN CHÍNH CỦA BOT ---
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents) # Đổi prefix về !
+intents = discord.Intents.all() # <<< THAY ĐỔI QUAN TRỌNG Ở ĐÂY
+# intents.message_content = True # Dòng này không cần thiết nữa khi dùng .all()
+
+bot = commands.Bot(command_prefix="!", intents=intents) 
 
 HEART_DATABASE = load_heart_data(HEART_DATA_FILE)
 
