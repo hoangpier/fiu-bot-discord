@@ -1,10 +1,9 @@
-# main.py (Phiên bản OCR Tại Chỗ - Sử dụng PIL + Tesseract)
+# main.py (Phiên bản OCR Tại Chỗ - Đã khắc phục lỗi "Can't keep up")
 
 import discord
 from discord.ext import commands
 import os
 import re
-import requests
 import io
 from PIL import Image
 from dotenv import load_dotenv
@@ -12,6 +11,7 @@ import threading
 from flask import Flask
 import asyncio
 import pytesseract
+import aiohttp # <<< THÊM: Thư viện tải ảnh bất đồng bộ
 
 # --- PHẦN 1: CẤU HÌNH WEB SERVER ---
 app = Flask(__name__)
@@ -30,23 +30,18 @@ def run_web_server():
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 
-# <<< BỎ: Không cần GEMINI_API_KEY nữa >>>
-# <<< THÊM: Cấu hình Tesseract nếu cần >>>
-# Ví dụ trên Windows:
+# Cấu hình Tesseract nếu cần
 # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 KARUTA_ID = 646937666251915264
 NEW_CHARACTERS_FILE = "new_characters.txt"
 HEART_DATABASE_FILE = "tennhanvatvasotim.txt"
 
-# <<< BỎ: Không cần cơ chế Cooldown cho OCR tại chỗ >>>
-
 def load_heart_data(file_path):
-    """Tải dữ liệu số tim của nhân vật từ một file."""
+    # ... (Nội dung hàm giữ nguyên)
     heart_db = {}
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
-            # ... (Nội dung hàm giữ nguyên)
             for line in f:
                 line = line.strip()
                 if not line.startswith('♡') or not line: continue
@@ -60,14 +55,12 @@ def load_heart_data(file_path):
                     except (ValueError, IndexError): continue
     except FileNotFoundError:
         print(f"LỖI: Không tìm thấy tệp dữ liệu '{file_path}'.")
-    # ...
     print(f"✅ Đã tải thành công {len(heart_db)} nhân vật vào cơ sở dữ liệu số tim.")
     return heart_db
 
 HEART_DATABASE = load_heart_data(HEART_DATABASE_FILE)
 
 def log_new_character(character_name):
-    """Ghi lại tên nhân vật mới."""
     # ... (Nội dung hàm giữ nguyên)
     try:
         existing_names = set()
@@ -81,44 +74,43 @@ def log_new_character(character_name):
     except Exception as e:
         print(f"Lỗi khi đang lưu nhân vật mới: {e}")
 
-# <<< THAY THẾ HOÀN TOÀN: Hàm xử lý ảnh mới sử dụng PIL và Tesseract >>>
-async def get_names_from_image_ocr(image_bytes):
+# <<< THAY ĐỔI: Chuyển hàm xử lý ảnh thành hàm thường (bỏ "async") >>>
+def get_names_from_image_ocr(image_bytes):
     """
     Sử dụng PIL để cắt ảnh và Tesseract để đọc chữ.
-    Logic dựa trên file docanh.py.
+    Sử dụng tọa độ được chuẩn hóa theo file docanh.py.
     """
     try:
         img = Image.open(io.BytesIO(image_bytes))
         width, height = img.size
         
-        # Giả sử kích thước ảnh drop 3 thẻ là 836x312
+        # Giữ nguyên kiểm tra kích thước
         if width < 830 or height < 300:
             print(f"  [OCR] Kích thước ảnh không phù hợp ({width}x{height}), bỏ qua.")
             return []
 
-        # Tọa độ và kích thước cố định cho mỗi thẻ
+        # Tọa độ và kích thước cố định từ file docanh.py
         card_width = 278
         card_height = 248
-        x_coords = [0, 279, 558] # Tọa độ x bắt đầu của mỗi thẻ
-        y_offset = 32            # Tọa độ y bắt đầu của các thẻ
+        x_coords = [0, 279, 558] 
+        y_offset = 0  # <<< THAY ĐỔI: Giả định không có khoảng trống trên >>>
 
         processed_data = []
 
-        for i in range(3): # Xử lý 3 thẻ
-            # Cắt ảnh thẻ
+        for i in range(3):
             box = (x_coords[i], y_offset, x_coords[i] + card_width, y_offset + card_height)
             card_img = img.crop(box)
 
-            # Cắt lấy vùng tên nhân vật
-            top_box = (20, 20, card_width - 20, 60)
+            # <<< THAY ĐỔI: Sử dụng tọa độ crop tên nhân vật từ docanh.py >>>
+            top_box = (15, 15, card_width - 15, 50)
             top_img = card_img.crop(top_box)
             
-            # Cắt lấy vùng mã số
+            # <<< TỰ ƯỚC LƯỢNG: Tọa độ cho mã số dựa trên cấu trúc của docanh.py >>>
+            # Bạn có thể cần tinh chỉnh lại vùng này
             print_box = (100, card_height - 30, card_width - 20, card_height - 10)
             print_img = card_img.crop(print_box)
 
-            # Đọc chữ bằng Tesseract
-            char_name_config = r"--psm 7 --oem 3"
+            char_name_config = r"--psm 6 --oem 3"
             print_num_config = r"--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789"
 
             char_name = pytesseract.image_to_string(top_img, config=char_name_config).strip().replace("\n", " ")
@@ -141,35 +133,35 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    """Sự kiện khi bot đã đăng nhập thành công vào Discord."""
     print(f'✅ Bot Discord đã đăng nhập với tên {bot.user}')
-    print('Bot đang chạy với trình đọc ảnh OCR Tại Chỗ (PIL + Tesseract).')
+    print('Bot đang chạy với trình đọc ảnh OCR Tại Chỗ (Đã tối ưu hóa).')
 
 @bot.event
 async def on_message(message):
-    """Sự kiện xử lý mỗi khi có tin nhắn mới."""
-    # <<< BỎ: Không cần biến global last_api_call_time >>>
-
     if not (message.author.id == KARUTA_ID and message.attachments):
         return
-
-    # <<< BỎ: Toàn bộ logic kiểm tra Cooldown >>>
     
     attachment = message.attachments[0]
     if not attachment.content_type.startswith('image/'):
         return
 
     print("\n" + "="*40)
-    print(f"🔎 [LOG] Phát hiện ảnh drop từ KARUTA. Bắt đầu xử lý OCR...")
+    print(f"🔎 [LOG] Phát hiện ảnh drop từ KARUTA. Bắt đầu xử lý...")
     print(f"  - URL ảnh: {attachment.url}")
 
     try:
-        response = requests.get(attachment.url)
-        response.raise_for_status()
-        image_bytes = response.content
+        # <<< THAY ĐỔI: Dùng aiohttp để tải ảnh không bị "đóng băng" >>>
+        async with aiohttp.ClientSession() as session:
+            async with session.get(attachment.url) as response:
+                if response.status != 200:
+                    print(f"  [LỖI] Không thể tải ảnh, status code: {response.status}")
+                    return
+                image_bytes = await response.read()
 
-        # <<< THAY ĐỔI: Gọi hàm OCR mới >>>
-        character_data = await get_names_from_image_ocr(image_bytes)
+        # <<< THAY ĐỔI: Chạy hàm OCR nặng trong một luồng riêng >>>
+        character_data = await bot.loop.run_in_executor(
+            None, get_names_from_image_ocr, image_bytes
+        )
         
         print(f"  -> Kết quả nhận dạng cuối cùng: {character_data}")
 
@@ -203,7 +195,6 @@ async def on_message(message):
 
 # --- PHẦN KHỞI ĐỘNG ---
 if __name__ == "__main__":
-    # <<< THAY ĐỔI: Chỉ cần kiểm tra TOKEN >>>
     if TOKEN:
         print("✅ Đã tìm thấy DISCORD_TOKEN.")
         bot_thread = threading.Thread(target=bot.run, args=(TOKEN,))
