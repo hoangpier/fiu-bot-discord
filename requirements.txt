@@ -3,3 +3,4 @@ python-dotenv
 pytesseract
 Pillow
 requests
+Flask
