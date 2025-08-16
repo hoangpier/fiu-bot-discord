@@ -1,4 +1,4 @@
-# main.py (Phiên bản Hoàn Chỉnh - OpenCV + Tesseract)
+# main.py (Phiên bản Hoàn Chỉnh - OpenCV + Tesseract với tính năng gỡ lỗi)
 # Tự động tìm thẻ trong ảnh và nhận dạng ký tự tại chỗ.
 
 import discord
@@ -13,12 +13,12 @@ import threading
 from flask import Flask
 import asyncio
 
-# <<< THÊM: Các thư viện cho xử lý ảnh nâng cao >>>
+# Thư viện cho xử lý ảnh nâng cao
 import pytesseract
 import cv2
 import numpy as np
 
-# --- PHẦN 1: CẤU HÌNH WEB SERVER ---
+# --- PHẦN 1: CẤU HÌNH WEB SERVER (CHO RENDER) ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -33,38 +33,39 @@ def run_web_server():
 
 # --- PHẦN 2: CẤU HÌNH VÀ CÁC HÀM CỦA BOT DISCORD ---
 load_dotenv()
-
 TOKEN = os.getenv('DISCORD_TOKEN')
 
-# <<< THÊM: Cấu hình đường dẫn cho Tesseract (chỉ cần cho Windows nếu không add vào PATH) >>>
-# Bỏ comment và sửa đường dẫn nếu cần thiết
+# Cấu hình đường dẫn cho Tesseract (chỉ cần cho Windows nếu không add vào PATH)
 # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 KARUTA_ID = 646937666251915264
-NEW_CHARACTERS_FILE = "new_characters.txt"
-HEART_DATABASE_FILE = "tennhanvatvasotim.txt"
+
+# Cấu hình đường dẫn file cho Render Disks
+DATA_DIR = "/data" # Thư mục của Render Disk, hoặc "." nếu chạy local
+NEW_CHARACTERS_FILE = os.path.join(DATA_DIR, "new_characters.txt")
+HEART_DATABASE_FILE = os.path.join(DATA_DIR, "tennhanvatvasotim.txt")
 
 def load_heart_data(file_path):
     """Tải dữ liệu số tim của nhân vật từ một file."""
     heart_db = {}
+    if not os.path.exists(os.path.dirname(file_path)):
+        os.makedirs(os.path.dirname(file_path))
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             for line in f:
+                # ... (logic xử lý file)
                 line = line.strip()
-                if not line.startswith('♡') or not line:
-                    continue
+                if not line.startswith('♡') or not line: continue
                 parts = line.split('·')
                 if len(parts) >= 2:
                     try:
                         heart_str = parts[0].replace('♡', '').replace(',', '').strip()
                         hearts = int(heart_str)
                         name = parts[-1].lower().strip()
-                        if name:
-                            heart_db[name] = hearts
-                    except (ValueError, IndexError):
-                        continue
+                        if name: heart_db[name] = hearts
+                    except (ValueError, IndexError): continue
     except FileNotFoundError:
-        print(f"LỖI: Không tìm thấy tệp dữ liệu '{file_path}'.")
+        print(f"INFO: Không tìm thấy tệp dữ liệu '{file_path}'. Sẽ tạo file mới khi cần.")
     except Exception as e:
         print(f"Lỗi khi đọc tệp dữ liệu: {e}")
     print(f"✅ Đã tải thành công {len(heart_db)} nhân vật vào cơ sở dữ liệu số tim.")
@@ -87,18 +88,16 @@ def log_new_character(character_name):
     except Exception as e:
         print(f"Lỗi khi đang lưu nhân vật mới: {e}")
 
-# <<< HÀM NÂNG CAO: Tự động tìm thẻ trong ảnh bằng OpenCV và xử lý bằng Tesseract >>>
 async def process_drop_dynamically(image_bytes):
+    """Hàm nâng cao: Tự động tìm thẻ trong ảnh bằng OpenCV và xử lý bằng Tesseract"""
     try:
         np_arr = np.frombuffer(image_bytes, np.uint8)
         full_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-        # Bước 1: Tiền xử lý ảnh để tìm cạnh
         gray = cv2.cvtColor(full_image, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
         edges = cv2.Canny(blurred, 50, 150)
 
-        # Bước 2: Tìm tất cả các đường viền
         contours, _ = cv2.findContours(edges.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         found_cards = []
@@ -107,20 +106,22 @@ async def process_drop_dynamically(image_bytes):
             aspect_ratio = w / float(h)
             area = cv2.contourArea(c)
 
-            # Bước 3: Lọc các đường viền để tìm thẻ bài
-            # !!! Bạn có thể cần tinh chỉnh các giá trị này !!!
-            if area > 50000 and 0.6 < aspect_ratio < 0.8:
+            # <<< BƯỚC GỠ LỖI: In ra thông số của tất cả các hình tìm được >>>
+            print(f"--- Tìm thấy contour với Area: {area}, Tỉ lệ: {aspect_ratio:.2f}")
+
+            # <<< BƯỚC TINH CHỈNH: Sửa giá trị "20000" cho phù hợp với log của bạn >>>
+            # Dựa vào kết quả in ra ở trên để chỉnh lại con số này.
+            if area > 20000 and 0.6 < aspect_ratio < 0.8:
                 found_cards.append((x, y, w, h))
 
         if not found_cards:
-            print("  [OpenCV] Không tìm thấy thẻ bài nào phù hợp.")
+            print("  [OpenCV] Không tìm thấy thẻ bài nào phù hợp với bộ lọc.")
             return []
 
         found_cards.sort(key=lambda item: item[0])
-        print(f"  [OpenCV] Đã tìm thấy {len(found_cards)} thẻ bài.")
+        print(f"  [OpenCV] Đã tìm thấy {len(found_cards)} thẻ bài hợp lệ.")
         
         final_results = []
-        # Bước 4: Cắt và xử lý OCR cho từng thẻ tìm được
         for (x, y, w, h) in found_cards:
             card_image_pil = Image.fromarray(full_image[y:y+h, x:x+w])
             
@@ -154,10 +155,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-@bot.command()
-async def ping(ctx):
-    await ctx.send("Pong!")
-
 @bot.event
 async def on_ready():
     print(f'✅ Bot Discord đã đăng nhập với tên {bot.user}')
@@ -165,8 +162,6 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    await bot.process_commands(message)
-    
     if not (message.author.id == KARUTA_ID and message.attachments):
         return
 
@@ -183,7 +178,6 @@ async def on_message(message):
         response.raise_for_status()
         image_bytes = response.content
 
-        # <<< GỌI HÀM XỬ LÝ ẢNH NÂNG CAO >>>
         character_data = await process_drop_dynamically(image_bytes)
         
         print(f"  -> Kết quả nhận dạng cuối cùng: {character_data}")
