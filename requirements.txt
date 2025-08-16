@@ -5,4 +5,5 @@ Pillow
 requests
 Flask
 waitress
-
+opencv-python
+numpy
