@@ -1,4 +1,4 @@
-# main.py (Phiên bản chạy trên Web Service)
+# main.py (Phiên bản sửa lỗi - Luôn trả lời)
 import discord
 from discord.ext import commands
 import os
@@ -11,20 +11,16 @@ from dotenv import load_dotenv
 import threading
 from flask import Flask
 
-# --- CẤU HÌNH WEB SERVER (PHẦN MỚI) ---
+# --- CẤU HÌNH WEB SERVER ---
 app = Flask(__name__)
-
 @app.route('/')
 def home():
-    # Trang web đơn giản để trả lời Render
     return "Bot Discord đang hoạt động."
-
 def run_web_server():
-    # Lấy cổng từ biến môi trường của Render, mặc định là 10000
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- CẤU HÌNH BOT DISCORD (GIỮ NGUYÊN) ---
+# --- CẤU HÌNH BOT DISCORD ---
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 KARUTA_ID = 646937666251915264
@@ -32,24 +28,19 @@ NEW_CHARACTERS_FILE = "new_characters.txt"
 
 def load_heart_data(file_path):
     heart_db = {}
-    line_number = 0
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             for line in f:
-                line_number += 1
                 line = line.strip()
-                if not line.startswith('♡'):
-                    continue
+                if not line.startswith('♡'): continue
                 parts = line.split('·')
                 if len(parts) >= 2:
                     try:
                         heart_str = parts[0].replace('♡', '').replace(',', '').strip()
                         hearts = int(heart_str)
                         name = parts[-1].lower().strip()
-                        if name:
-                           heart_db[name] = hearts
-                    except (ValueError, IndexError):
-                        continue
+                        if name: heart_db[name] = hearts
+                    except (ValueError, IndexError): continue
     except FileNotFoundError:
         print(f"LỖI: Không tìm thấy tệp dữ liệu '{file_path}'.")
     except Exception as e:
@@ -78,7 +69,7 @@ def preprocess_image_for_ocr(image_obj):
     img = enhancer.enhance(2.0)
     return img
 
-def get_names_from_drop_image(image_url):
+def get_names_from_image(image_url):
     try:
         response = requests.get(image_url)
         if response.status_code != 200: return []
@@ -100,6 +91,18 @@ def get_names_from_drop_image(image_url):
         print(f"Lỗi trong quá trình xử lý ảnh: {e}")
         return []
 
+def get_names_from_embed_fields(embed):
+    extracted_names = []
+    try:
+        for field in embed.fields:
+            match = re.search(r'\*\*(.*?)\*\*', field.value)
+            if match:
+                extracted_names.append(match.group(1).strip())
+        return extracted_names
+    except Exception as e:
+        print(f"Lỗi khi xử lý embed fields: {e}")
+        return []
+
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -110,35 +113,54 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    if message.author.id == KARUTA_ID:
-        if "dropping" in message.content and message.embeds:
-            embed = message.embeds[0]
-            if embed.image and embed.image.url:
-                print(f"🔎 Phát hiện drop từ Karuta. Bắt đầu xử lý ảnh...")
-                character_names = get_names_from_drop_image(embed.image.url)
-                if not character_names or len(character_names) < 3:
-                    print(" Lỗi: Không thể đọc đủ 3 tên nhân vật từ ảnh.")
-                    return
-                print(f" Nhận dạng các tên: {character_names}")
-                reply_lines = []
-                for i, name in enumerate(character_names):
-                    lookup_name = name.lower().strip()
-                    if lookup_name and lookup_name not in HEART_DATABASE:
-                        log_new_character(name)
-                    heart_value = HEART_DATABASE.get(lookup_name, 0)
-                    heart_display = f"{heart_value:,}" if heart_value > 0 else "N/A"
-                    reply_lines.append(f"{i+1} | ♡**{heart_display}** · `{name}`")
-                reply_content = "\n".join(reply_lines)
-                await message.reply(reply_content)
-                print("✅ Đã gửi phản hồi thành công.")
+    if message.author.id == KARUTA_ID and "dropping" in message.content and message.embeds:
+        embed = message.embeds[0]
+        character_names = []
+
+        print(f"🔎 Phát hiện drop từ Karuta. Bắt đầu xử lý...")
+
+        if embed.image and embed.image.url:
+            print("  -> Đây là Drop dạng Ảnh. Sử dụng OCR...")
+            character_names = get_names_from_image(embed.image.url)
+        elif embed.fields:
+            print("  -> Đây là Drop dạng Chữ/Embed. Đọc dữ liệu fields...")
+            character_names = get_names_from_embed_fields(embed)
+
+        # Đảm bảo list character_names luôn có 3 phần tử để xử lý
+        while len(character_names) < 3:
+            character_names.append("") # Thêm chuỗi rỗng nếu OCR thất bại
+
+        print(f"  Nhận dạng các tên: {character_names}")
+
+        async with message.channel.typing():
+            reply_lines = []
+            
+            # <<< SỬA LỖI LOGIC NẰM Ở ĐÂY >>>
+            # Vòng lặp bây giờ sẽ luôn chạy 3 lần và tạo 3 dòng trả lời
+            for i in range(3):
+                name = character_names[i]
+                
+                # Sử dụng tên hiển thị, nếu tên rỗng thì báo không đọc được
+                display_name = name if name else "Không đọc được"
+                lookup_name = name.lower().strip() if name else ""
+                
+                if lookup_name and lookup_name not in HEART_DATABASE:
+                    log_new_character(name)
+                
+                heart_value = HEART_DATABASE.get(lookup_name, 0)
+                heart_display = f"{heart_value:,}" if heart_value > 0 else "N/A"
+                
+                reply_lines.append(f"{i+1} | ♡**{heart_display}** · `{display_name}`")
+
+            reply_content = "\n".join(reply_lines)
+            await message.reply(reply_content)
+            print("✅ Đã gửi phản hồi thành công.")
 
 # --- KHỞI ĐỘNG BOT VÀ WEB SERVER ---
 if __name__ == "__main__":
     if TOKEN:
-        # Chạy bot trong một luồng riêng
         bot_thread = threading.Thread(target=bot.run, args=(TOKEN,))
         bot_thread.start()
-        # Chạy web server ở luồng chính
         print("🚀 Khởi động Web Server để đáp ứng Render...")
         run_web_server()
     else:
