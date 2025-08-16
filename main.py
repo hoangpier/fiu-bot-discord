@@ -1,4 +1,5 @@
 # main.py (Phiên bản Nâng Cấp - Trình đọc ảnh chính xác cao với Gemini API)
+# Đã cập nhật để đọc cả Tên nhân vật và Mã số (Print Number)
 
 import discord
 from discord.ext import commands
@@ -31,7 +32,7 @@ load_dotenv() # Tải các biến môi trường từ tệp .env
 
 # Lấy TOKEN và API KEY từ file .env
 TOKEN = os.getenv('DISCORD_TOKEN')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY') # <<< THAY ĐỔI QUAN TRỌNG
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 KARUTA_ID = 646937666251915264
 NEW_CHARACTERS_FILE = "new_characters.txt"
@@ -86,24 +87,22 @@ def log_new_character(character_name):
     except Exception as e:
         print(f"Lỗi khi đang lưu nhân vật mới: {e}")
 
+# <<< HÀM ĐƯỢC NÂNG CẤP HOÀN TOÀN >>>
 async def get_names_from_image_via_gemini_api(image_bytes):
     """
-    Sử dụng Gemini API để nhận diện tên nhân vật từ ảnh.
-    Trả về danh sách tên nhân vật.
+    Sử dụng Gemini API để nhận diện tên nhân vật VÀ MÃ SỐ từ ảnh.
+    Trả về một danh sách các tuple, mỗi tuple chứa (tên, mã số).
     """
-    # <<< THAY ĐỔI QUAN TRỌNG: Kiểm tra xem API Key có tồn tại không
     if not GEMINI_API_KEY:
         print("  [LỖI API] Biến môi trường GEMINI_API_KEY chưa được thiết lập.")
-        return ["Lỗi API (Key)", "Lỗi API (Key)", "Lỗi API (Key)"]
-        
+        return [("Lỗi API (Key)", "0"), ("Lỗi API (Key)", "0"), ("Lỗi API (Key)", "0")]
+
     try:
-        # Mã hóa ảnh sang Base64
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
 
-        # Định nghĩa prompt để hỏi AI về tên nhân vật
-        prompt = "Từ hình ảnh thẻ bài Karuta này, hãy trích xuất và liệt kê tên các nhân vật theo thứ tự từ trái sang phải. Chỉ trả về tên, mỗi tên trên một dòng."
+        # <<< THAY ĐỔI: PROMPT MỚI YÊU CẦU CẢ TÊN VÀ MÃ SỐ >>>
+        prompt = "Từ hình ảnh thẻ bài Karuta này, hãy trích xuất tên nhân vật và dãy số ở góc dưới cùng bên phải của mỗi thẻ. Trả về kết quả theo thứ tự từ trái sang phải, mỗi nhân vật trên một dòng, theo định dạng chính xác: Tên nhân vật #DãySố"
 
-        # Cấu trúc payload cho Gemini API
         payload = {
             "contents": [
                 {
@@ -112,7 +111,7 @@ async def get_names_from_image_via_gemini_api(image_bytes):
                         {"text": prompt},
                         {
                             "inlineData": {
-                                "mimeType": "image/webp", # MIME type của ảnh drop Karuta thường là webp
+                                "mimeType": "image/webp",
                                 "data": base64_image
                             }
                         }
@@ -121,42 +120,45 @@ async def get_names_from_image_via_gemini_api(image_bytes):
             ]
         }
         
-        # Cấu hình URL với API Key đã được tải từ .env
-        apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + GEMINI_API_KEY # <<< THAY ĐỔI QUAN TRỌNG
-        # Đã cập nhật lên model gemini-1.5-flash mới hơn và ổn định hơn
-
-        print("  [API] Đang gửi ảnh đến Gemini API để nhận dạng...")
+        apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + GEMINI_API_KEY
+        print("  [API] Đang gửi ảnh đến Gemini API để nhận dạng (Tên + Mã số)...")
         
-        # Gửi yêu cầu đến Gemini API
         response = requests.post(apiUrl, headers={'Content-Type': 'application/json'}, json=payload)
-        response.raise_for_status() # Báo lỗi nếu có lỗi HTTP
-
+        response.raise_for_status()
         result = response.json()
         
-        # Phân tích phản hồi từ API
         if result and result.get('candidates') and result['candidates'][0].get('content') and result['candidates'][0]['content'].get('parts'):
             api_text = result['candidates'][0]['content']['parts'][0]['text']
-            names = [name.strip() for name in api_text.split('\n') if name.strip()]
             
-            # Hậu xử lý nhỏ (loại bỏ ký tự không cần thiết)
-            processed_names = []
-            for name in names:
-                cleaned = re.sub(r'[^a-zA-Z0-9\s\'-.]', '', name)
-                cleaned = ' '.join(cleaned.split())
-                processed_names.append(cleaned)
+            # <<< THAY ĐỔI: XỬ LÝ KẾT QUẢ THEO ĐỊNH DẠNG MỚI >>>
+            processed_data = []
+            lines = api_text.strip().split('\n')
+            
+            for line in lines:
+                if '#' in line:
+                    parts = line.split('#', 1)
+                    name = parts[0].strip()
+                    print_number = parts[1].strip()
+                    
+                    cleaned_name = re.sub(r'[^a-zA-Z0-9\s\'-.]', '', name)
+                    cleaned_name = ' '.join(cleaned_name.split())
+                    
+                    processed_data.append((cleaned_name, print_number))
+                else:
+                    processed_data.append((line.strip(), "???"))
 
-            print(f"  [API] Nhận dạng từ Gemini API: {processed_names}")
-            return processed_names
+            print(f"  [API] Nhận dạng từ Gemini API: {processed_data}")
+            return processed_data
         else:
             print("  [API] Phản hồi từ Gemini API không chứa dữ liệu hợp lệ.")
-            return ["Không đọc được (API)", "Không đọc được (API)", "Không đọc được (API)"]
+            return [("Không đọc được (API)", "0"), ("Không đọc được (API)", "0"), ("Không đọc được (API)", "0")]
 
     except requests.exceptions.RequestException as e:
         print(f"  [LỖI API] Lỗi khi gọi Gemini API: {e}")
-        return ["Lỗi API (Request)", "Lỗi API (Request)", "Lỗi API (Request)"]
+        return [("Lỗi API (Request)", "0"), ("Lỗi API (Request)", "0"), ("Lỗi API (Request)", "0")]
     except Exception as e:
         print(f"  [LỖI API] Đã xảy ra lỗi không xác định khi xử lý API: {e}")
-        return ["Lỗi API (Unknown)", "Lỗi API (Unknown)", "Lỗi API (Unknown)"]
+        return [("Lỗi API (Unknown)", "0"), ("Lỗi API (Unknown)", "0"), ("Lỗi API (Unknown)", "0")]
 
 async def get_names_from_image_upgraded(image_bytes):
     """
@@ -204,22 +206,24 @@ async def on_message(message):
         response.raise_for_status()
         image_bytes = response.content
 
-        # Gọi hàm xử lý ảnh nâng cấp
-        character_names = await get_names_from_image_upgraded(image_bytes)
+        # <<< THAY ĐỔI: TÊN BIẾN ĐỂ PHẢN ÁNH DỮ LIỆU MỚI (TÊN + SỐ) >>>
+        character_data = await get_names_from_image_upgraded(image_bytes)
         
-        print(f"  -> Kết quả nhận dạng tên: {character_names}")
+        print(f"  -> Kết quả nhận dạng (Tên, Mã số): {character_data}")
 
-        if not character_names or any(name.startswith("Lỗi API") for name in character_names):
-            print("  -> Lỗi API hoặc không nhận dạng được tên. Bỏ qua.")
+        if not character_data or any(name.startswith("Lỗi API") for name, num in character_data):
+            print("  -> Lỗi API hoặc không nhận dạng được. Bỏ qua.")
             print("="*40 + "\n")
-            await message.reply("Xin lỗi, tôi không thể đọc được tên nhân vật từ ảnh này. Vui lòng thử lại với ảnh rõ hơn hoặc báo cáo lỗi nếu vấn đề tiếp diễn.")
+            await message.reply("Xin lỗi, tôi không thể đọc được dữ liệu từ ảnh này. Vui lòng thử lại với ảnh rõ hơn hoặc báo cáo lỗi nếu vấn đề tiếp diễn.")
             return
 
         async with message.channel.typing():
             await asyncio.sleep(1)
 
             reply_lines = []
-            for i, name in enumerate(character_names):
+            
+            # <<< THAY ĐỔI: VÒNG LẶP MỚI ĐỂ XỬ LÝ (TÊN, MÃ SỐ) >>>
+            for i, (name, print_number) in enumerate(character_data):
                 display_name = name if name else "Không đọc được"
                 lookup_name = name.lower().strip() if name else ""
                 
@@ -229,7 +233,8 @@ async def on_message(message):
                 heart_value = HEART_DATABASE.get(lookup_name, 0)
                 heart_display = f"{heart_value:,}" if heart_value > 0 else "N/A"
                 
-                reply_lines.append(f"{i+1} | ♡**{heart_display}** · `{display_name}`")
+                # <<< THAY ĐỔI: ĐỊNH DẠNG TIN NHẮN MỚI, THÊM MÃ SỐ VÀO CUỐI >>>
+                reply_lines.append(f"{i+1} | ♡**{heart_display}** · `{display_name}` `#{print_number}`")
             
             reply_content = "\n".join(reply_lines)
             await message.reply(reply_content)
@@ -247,7 +252,6 @@ async def on_message(message):
 
 # --- PHẦN KHỞI ĐỘNG ---
 if __name__ == "__main__":
-    # <<< THAY ĐỔI QUAN TRỌNG: Kiểm tra cả TOKEN và GEMINI_API_KEY trước khi chạy
     if TOKEN and GEMINI_API_KEY:
         print("✅ Đã tìm thấy DISCORD_TOKEN và GEMINI_API_KEY.")
         bot_thread = threading.Thread(target=bot.run, args=(TOKEN,))
