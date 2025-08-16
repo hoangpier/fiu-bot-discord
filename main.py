@@ -102,9 +102,9 @@ def get_names_from_image_upgraded(image_bytes):
         extracted_names = []
         
         # Cấu hình Tesseract OCR:
-        # --psm 6: Assume a single uniform block of text.
-        # --oem 3: Use both Legacy and LSTM OCR engine.
-        custom_config = r'--psm 6 --oem 3' 
+        # --psm 7: Treat the image as a single text line. Rất phù hợp với vùng tên đã được cắt.
+        # --oem 3: Sử dụng cả công cụ OCR cũ và mới.
+        custom_config = r'--psm 7 --oem 3' 
 
         for i in range(3):
             card_box = (x_coords[i], 0, x_coords[i] + card_width, card_height)
@@ -113,30 +113,29 @@ def get_names_from_image_upgraded(image_bytes):
             name_box = (15, 15, card_width - 15, 60) 
             name_img = card_img.crop(name_box)
 
-            # Tiền xử lý ảnh nâng cao:
+            # Tiền xử lý ảnh nâng cao để đảm bảo chữ đen trên nền trắng:
             name_img = name_img.convert('L') # 1. Chuyển sang ảnh xám
             
-            # 2. Giảm độ tương phản một chút để tránh mất chi tiết
+            # 2. Tăng độ tương phản (có thể thử các giá trị khác như 2.0, 2.5)
             enhancer = ImageEnhance.Contrast(name_img)
-            name_img = enhancer.enhance(1.8) # Giảm từ 2.5 xuống 1.8
+            name_img = enhancer.enhance(2.2) # Tăng lên 2.2 từ 1.8
 
             # 3. Làm sắc nét 2 lần
             name_img = name_img.filter(ImageFilter.SHARPEN)
             name_img = name_img.filter(ImageFilter.SHARPEN)
 
-            # 4. Nhị phân hóa thích ứng (Adaptive Binarization):
-            # Với ảnh PIL, chúng ta cần tự triển khai logic này nếu muốn chi tiết hơn.
-            # Với Tesseract, đôi khi việc dùng 'L' (grayscale) kết hợp contrast/sharpen đã đủ.
-            # Hoặc thử nhị phân hóa với ngưỡng động nếu có thư viện hỗ trợ.
-            # Hiện tại, tôi sẽ giữ ngưỡng cố định nhưng có thể điều chỉnh sau nếu cần.
-            name_img = ImageOps.invert(name_img) # Chữ đen trên nền trắng
-            name_img = name_img.point(lambda x: 0 if x < 135 else 255) # Tăng ngưỡng một chút để bắt các pixel sáng hơn
+            # 4. Nhị phân hóa: Đảm bảo chữ đen trên nền trắng.
+            # Vì chữ trên thẻ Karuta thường là màu sáng trên nền tối, chúng ta cần đảo màu trước.
+            name_img = ImageOps.invert(name_img) # Đảo màu (chữ sáng -> tối, nền tối -> sáng)
             
-            # 5. Mở rộng (Dilation) và co lại (Erosion) - morphology operations
-            # Đôi khi có thể giúp lấp đầy khoảng trống trong chữ hoặc loại bỏ nhiễu
-            # name_img = name_img.filter(ImageFilter.MinFilter(3)) # Erosion
-            # name_img = name_img.filter(ImageFilter.MaxFilter(3)) # Dilation
+            # Sau khi đảo, chữ sẽ là màu tối trên nền sáng.
+            # Áp dụng ngưỡng để biến thành ảnh đen trắng:
+            # - Pixel có giá trị < 100 (rất tối) sẽ thành đen (0) -> Đây là chữ
+            # - Pixel có giá trị >= 100 (sáng hơn) sẽ thành trắng (255) -> Đây là nền
+            name_img = name_img.point(lambda x: 0 if x < 100 else 255) # Ngưỡng 100 giúp tách biệt tốt hơn
 
+            # (Tùy chọn) Thêm bộ lọc trung vị (MedianFilter) để giảm nhiễu nhỏ sau nhị phân hóa
+            # name_img = name_img.filter(ImageFilter.MedianFilter(size=3))
 
             text = pytesseract.image_to_string(name_img, config=custom_config)
             
@@ -144,16 +143,18 @@ def get_names_from_image_upgraded(image_bytes):
             cleaned_name = text.strip().replace("\n", " ").replace(" ", " ") # Chuẩn hóa khoảng trắng
             
             # Loại bỏ các ký tự không phải chữ cái (a-z, A-Z), số (0-9), hoặc khoảng trắng
-            cleaned_name = re.sub(r'[^a-zA-Z0-9\s]', '', cleaned_name)
+            cleaned_name = re.sub(r'[^a-zA-Z0-9\s\']', '', cleaned_name) # Cho phép cả dấu nháy đơn ' (ví dụ: Tsukasa's Father)
             
             # Thêm một bước làm sạch nữa: loại bỏ các chuỗi ký tự đơn lẻ hoặc rất ngắn
             # thường là nhiễu nếu đứng một mình
             words = cleaned_name.split()
-            filtered_words = [word for word in words if len(word) > 1 or word.lower() in ['a', 'i', 'o']] # Giữ lại 'a', 'i', 'o'
+            filtered_words = [word for word in words if len(word) > 1 or word.lower() in ['a', 'i', 'o', 'of', 'the', 's']] # Giữ lại các từ ngắn có nghĩa phổ biến
             cleaned_name = " ".join(filtered_words)
 
-            # Xử lý các trường hợp đặc biệt thường bị đọc sai
-            cleaned_name = cleaned_name.replace("Miog", "Mio") # Ví dụ nếu "Mio" bị đọc thành "Miog"
+            # Xử lý các trường hợp đặc biệt thường bị đọc sai (có thể bổ sung thêm khi gặp lỗi mới)
+            cleaned_name = cleaned_name.replace("Miog", "Mio")
+            # Ví dụ: nếu "Tsukasa's Father" bị đọc thành "Tsukasas Father", chúng ta có thể thêm:
+            # cleaned_name = cleaned_name.replace("Tsukasas Father", "Tsukasa's Father")
 
 
             if len(cleaned_name) > 1 and not all(char.isspace() for char in cleaned_name):
