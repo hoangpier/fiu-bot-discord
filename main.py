@@ -110,51 +110,42 @@ def get_names_from_image_upgraded(image_bytes):
             card_box = (x_coords[i], 0, x_coords[i] + card_width, card_height)
             card_img = main_image.crop(card_box)
 
-            name_box = (15, 15, card_width - 15, 60) 
+            # Điều chỉnh tọa độ cắt vùng tên nhân vật theo docanh.py
+            name_box = (15, 15, card_width - 15, 50) # Chiều cao vùng cắt tên là 50 (từ y=15 đến y=50)
             name_img = card_img.crop(name_box)
 
-            # Tiền xử lý ảnh nâng cao để đảm bảo chữ đen trên nền trắng:
+            # Tiền xử lý ảnh đơn giản hóa: chỉ chuyển sang xám, tăng tương phản và làm sắc nét
             name_img = name_img.convert('L') # 1. Chuyển sang ảnh xám
             
             # 2. Tăng độ tương phản (có thể thử các giá trị khác như 2.0, 2.5)
             enhancer = ImageEnhance.Contrast(name_img)
-            name_img = enhancer.enhance(2.2) # Tăng lên 2.2 từ 1.8
+            name_img = enhancer.enhance(2.0) # Quay lại mức tương phản 2.0
 
             # 3. Làm sắc nét 2 lần
             name_img = name_img.filter(ImageFilter.SHARPEN)
             name_img = name_img.filter(ImageFilter.SHARPEN)
-
-            # 4. Nhị phân hóa: Đảm bảo chữ đen trên nền trắng.
-            # Vì chữ trên thẻ Karuta thường là màu sáng trên nền tối, chúng ta cần đảo màu trước.
-            name_img = ImageOps.invert(name_img) # Đảo màu (chữ sáng -> tối, nền tối -> sáng)
             
-            # Sau khi đảo, chữ sẽ là màu tối trên nền sáng.
-            # Áp dụng ngưỡng để biến thành ảnh đen trắng:
-            # - Pixel có giá trị < 100 (rất tối) sẽ thành đen (0) -> Đây là chữ
-            # - Pixel có giá trị >= 100 (sáng hơn) sẽ thành trắng (255) -> Đây là nền
-            name_img = name_img.point(lambda x: 0 if x < 100 else 255) # Ngưỡng 100 giúp tách biệt tốt hơn
-
-            # (Tùy chọn) Thêm bộ lọc trung vị (MedianFilter) để giảm nhiễu nhỏ sau nhị phân hóa
-            # name_img = name_img.filter(ImageFilter.MedianFilter(size=3))
+            # Gỡ bỏ các bước đảo màu và nhị phân hóa cứng nhắc, để Tesseract xử lý ảnh xám đã làm rõ.
+            # (Bạn có thể thêm name_img.save(f"debug_card_{i}.png") tại đây để kiểm tra ảnh trước khi OCR)
 
             text = pytesseract.image_to_string(name_img, config=custom_config)
             
             # Hậu xử lý tên:
             cleaned_name = text.strip().replace("\n", " ").replace(" ", " ") # Chuẩn hóa khoảng trắng
             
-            # Loại bỏ các ký tự không phải chữ cái (a-z, A-Z), số (0-9), hoặc khoảng trắng
-            cleaned_name = re.sub(r'[^a-zA-Z0-9\s\']', '', cleaned_name) # Cho phép cả dấu nháy đơn ' (ví dụ: Tsukasa's Father)
+            # Loại bỏ các ký tự không phải chữ cái (a-z, A-Z), số (0-9), khoảng trắng, dấu nháy đơn hoặc dấu gạch nối
+            cleaned_name = re.sub(r'[^a-zA-Z0-9\s\'-]', '', cleaned_name) # Cho phép cả dấu nháy đơn ' và dấu gạch nối -
             
             # Thêm một bước làm sạch nữa: loại bỏ các chuỗi ký tự đơn lẻ hoặc rất ngắn
             # thường là nhiễu nếu đứng một mình
             words = cleaned_name.split()
-            filtered_words = [word for word in words if len(word) > 1 or word.lower() in ['a', 'i', 'o', 'of', 'the', 's']] # Giữ lại các từ ngắn có nghĩa phổ biến
+            filtered_words = [word for word in words if len(word) > 1 or word.lower() in ['a', 'i', 'o', 'of', 'the', 's', 'ii']] # Giữ lại các từ ngắn có nghĩa phổ biến và 'ii'
             cleaned_name = " ".join(filtered_words)
 
             # Xử lý các trường hợp đặc biệt thường bị đọc sai (có thể bổ sung thêm khi gặp lỗi mới)
             cleaned_name = cleaned_name.replace("Miog", "Mio")
-            # Ví dụ: nếu "Tsukasa's Father" bị đọc thành "Tsukasas Father", chúng ta có thể thêm:
-            # cleaned_name = cleaned_name.replace("Tsukasas Father", "Tsukasa's Father")
+            # Ví dụ: nếu "Genocide" bị đọc sai (ví dụ Genocde), có thể thêm:
+            # cleaned_name = cleaned_name.replace("Genocde", "Genocide")
 
 
             if len(cleaned_name) > 1 and not all(char.isspace() for char in cleaned_name):
