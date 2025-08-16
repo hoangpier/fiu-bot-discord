@@ -1,5 +1,4 @@
-# main.py (Phiên bản Nâng Cấp - Trình đọc ảnh chính xác cao với Gemini API)
-# Đã cập nhật để đọc cả Tên nhân vật và Mã số (Print Number)
+# main.py (Phiên bản Hoàn Chỉnh - Đọc Tên + Mã Số & Chống Lỗi 429)
 
 import discord
 from discord.ext import commands
@@ -13,6 +12,7 @@ from dotenv import load_dotenv
 import threading
 from flask import Flask
 import asyncio
+import time # <<< THÊM: Thư viện thời gian cho Cooldown
 
 # --- PHẦN 1: CẤU HÌNH WEB SERVER ---
 app = Flask(__name__)
@@ -38,10 +38,13 @@ KARUTA_ID = 646937666251915264
 NEW_CHARACTERS_FILE = "new_characters.txt"
 HEART_DATABASE_FILE = "tennhanvatvasotim.txt"
 
+# <<< THÊM: Cấu hình cho Cooldown để chống lỗi 429 >>>
+last_api_call_time = 0
+COOLDOWN_SECONDS = 3 # Thời gian chờ giữa các lần gọi API (giây)
+
 def load_heart_data(file_path):
     """
     Tải dữ liệu số tim của nhân vật từ một file.
-    Dữ liệu được lưu trữ trong một dictionary (cơ sở dữ liệu trong bộ nhớ).
     """
     heart_db = {}
     try:
@@ -72,7 +75,6 @@ HEART_DATABASE = load_heart_data(HEART_DATABASE_FILE)
 def log_new_character(character_name):
     """
     Ghi lại tên nhân vật mới chưa có trong cơ sở dữ liệu số tim vào một file.
-    Đảm bảo không ghi trùng lặp tên.
     """
     try:
         existing_names = set()
@@ -87,7 +89,6 @@ def log_new_character(character_name):
     except Exception as e:
         print(f"Lỗi khi đang lưu nhân vật mới: {e}")
 
-# <<< HÀM ĐƯỢC NÂNG CẤP HOÀN TOÀN >>>
 async def get_names_from_image_via_gemini_api(image_bytes):
     """
     Sử dụng Gemini API để nhận diện tên nhân vật VÀ MÃ SỐ từ ảnh.
@@ -99,8 +100,6 @@ async def get_names_from_image_via_gemini_api(image_bytes):
 
     try:
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
-
-        # <<< THAY ĐỔI: PROMPT MỚI YÊU CẦU CẢ TÊN VÀ MÃ SỐ >>>
         prompt = "Từ hình ảnh thẻ bài Karuta này, hãy trích xuất tên nhân vật và dãy số ở góc dưới cùng bên phải của mỗi thẻ. Trả về kết quả theo thứ tự từ trái sang phải, mỗi nhân vật trên một dòng, theo định dạng chính xác: Tên nhân vật #DãySố"
 
         payload = {
@@ -130,7 +129,6 @@ async def get_names_from_image_via_gemini_api(image_bytes):
         if result and result.get('candidates') and result['candidates'][0].get('content') and result['candidates'][0]['content'].get('parts'):
             api_text = result['candidates'][0]['content']['parts'][0]['text']
             
-            # <<< THAY ĐỔI: XỬ LÝ KẾT QUẢ THEO ĐỊNH DẠNG MỚI >>>
             processed_data = []
             lines = api_text.strip().split('\n')
             
@@ -161,9 +159,7 @@ async def get_names_from_image_via_gemini_api(image_bytes):
         return [("Lỗi API (Unknown)", "0"), ("Lỗi API (Unknown)", "0"), ("Lỗi API (Unknown)", "0")]
 
 async def get_names_from_image_upgraded(image_bytes):
-    """
-    Hàm đọc ảnh được nâng cấp, sử dụng Gemini API.
-    """
+    """Hàm đọc ảnh được nâng cấp, sử dụng Gemini API."""
     return await get_names_from_image_via_gemini_api(image_bytes)
 
 # --- PHẦN CHÍNH CỦA BOT ---
@@ -186,12 +182,23 @@ async def on_ready():
 async def on_message(message):
     """
     Sự kiện xử lý mỗi khi có tin nhắn mới.
-    Bot sẽ kiểm tra nếu tin nhắn đến từ Karuta và có ảnh đính kèm để xử lý.
+    Đã tích hợp cơ chế Cooldown để tránh lỗi 429.
     """
+    global last_api_call_time
+
     await bot.process_commands(message)
     
     if not (message.author.id == KARUTA_ID and message.attachments):
         return
+
+    # <<< BẮT ĐẦU: Logic kiểm tra Cooldown >>>
+    current_time = time.time()
+    if current_time - last_api_call_time < COOLDOWN_SECONDS:
+        print(f"🔎 [COOLDOWN] Yêu cầu bị bỏ qua do còn trong thời gian chờ. Chờ {COOLDOWN_SECONDS - (current_time - last_api_call_time):.1f}s nữa.")
+        return
+    
+    last_api_call_time = current_time
+    # <<< KẾT THÚC: Logic kiểm tra Cooldown >>>
 
     attachment = message.attachments[0]
     if not attachment.content_type.startswith('image/'):
@@ -206,13 +213,13 @@ async def on_message(message):
         response.raise_for_status()
         image_bytes = response.content
 
-        # <<< THAY ĐỔI: TÊN BIẾN ĐỂ PHẢN ÁNH DỮ LIỆU MỚI (TÊN + SỐ) >>>
         character_data = await get_names_from_image_upgraded(image_bytes)
         
         print(f"  -> Kết quả nhận dạng (Tên, Mã số): {character_data}")
 
         if not character_data or any(name.startswith("Lỗi API") for name, num in character_data):
             print("  -> Lỗi API hoặc không nhận dạng được. Bỏ qua.")
+            last_api_call_time = current_time - COOLDOWN_SECONDS 
             print("="*40 + "\n")
             await message.reply("Xin lỗi, tôi không thể đọc được dữ liệu từ ảnh này. Vui lòng thử lại với ảnh rõ hơn hoặc báo cáo lỗi nếu vấn đề tiếp diễn.")
             return
@@ -221,8 +228,6 @@ async def on_message(message):
             await asyncio.sleep(1)
 
             reply_lines = []
-            
-            # <<< THAY ĐỔI: VÒNG LẶP MỚI ĐỂ XỬ LÝ (TÊN, MÃ SỐ) >>>
             for i, (name, print_number) in enumerate(character_data):
                 display_name = name if name else "Không đọc được"
                 lookup_name = name.lower().strip() if name else ""
@@ -233,7 +238,6 @@ async def on_message(message):
                 heart_value = HEART_DATABASE.get(lookup_name, 0)
                 heart_display = f"{heart_value:,}" if heart_value > 0 else "N/A"
                 
-                # <<< THAY ĐỔI: ĐỊNH DẠNG TIN NHẮN MỚI, THÊM MÃ SỐ VÀO CUỐI >>>
                 reply_lines.append(f"{i+1} | ♡**{heart_display}** · `{display_name}` `#{print_number}`")
             
             reply_content = "\n".join(reply_lines)
