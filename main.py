@@ -158,9 +158,14 @@ def get_names_from_embed_fields(embed):
 # --- PHẦN CHÍNH CỦA BOT ---
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!diag-", intents=intents) # Đổi prefix để tránh xung đột
+bot = commands.Bot(command_prefix="!", intents=intents) # Đổi prefix về !
 
 HEART_DATABASE = load_heart_data(HEART_DATA_FILE)
+
+@bot.command(name='ping')
+async def ping(ctx):
+    """Lệnh để kiểm tra bot có đang hoạt động không."""
+    await ctx.send('Pong!')
 
 @bot.event
 async def on_ready():
@@ -173,7 +178,7 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    # Xử lý các command (nếu có)
+    # Xử lý các command (ví dụ: !ping) trước
     await bot.process_commands(message)
 
     # Chỉ xử lý tin nhắn từ Karuta
