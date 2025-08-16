@@ -1,6 +1,5 @@
-# main.py (Phiên bản Hoàn chỉnh + Lệnh chẩn đoán !ping)
-import discord
-from discord.ext import commands
+# main.py (Phiên bản viết lại bằng discum)
+import discum
 import os
 import re
 import requests
@@ -9,23 +8,11 @@ import pytesseract
 from PIL import Image, ImageEnhance
 from dotenv import load_dotenv
 import threading
-from flask import Flask
 
-# --- PHẦN 1: CẤU HÌNH WEB SERVER ĐỂ CHẠY TRÊN RENDER ---
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot Discord đang hoạt động."
-
-def run_web_server():
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
-
-# --- PHẦN 2: CẤU HÌNH VÀ CÁC HÀM CỦA BOT DISCORD ---
+# --- PHẦN 1: CẤU HÌNH VÀ CÁC HÀM XỬ LÝ (Tương tự phiên bản trước) ---
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
-KARUTA_ID = 646937666251915264
+KARUTA_ID = "646937666251915264"
 NEW_CHARACTERS_FILE = "new_characters.txt"
 
 def load_heart_data(file_path):
@@ -96,8 +83,8 @@ def get_names_from_image(image_url):
 def get_names_from_embed_fields(embed):
     extracted_names = []
     try:
-        for field in embed.fields:
-            match = re.search(r'\*\*(.*?)\*\*', field.value)
+        for field in embed.get('fields', []):
+            match = re.search(r'\*\*(.*?)\*\*', field.get('value', ''))
             if match:
                 extracted_names.append(match.group(1).strip())
         return extracted_names
@@ -105,73 +92,76 @@ def get_names_from_embed_fields(embed):
         print(f"Lỗi khi xử lý embed fields: {e}")
         return []
 
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+# --- PHẦN 2: LOGIC BOT VIẾT BẰNG DISUM ---
+bot = discum.Client(token=TOKEN, log=False)
 
-# <<< LỆNH KIỂM TRA PING PONG >>>
-@bot.command()
-async def ping(ctx):
-    """Lệnh kiểm tra xem bot có hoạt động và trả lời được không."""
-    print(f"✅ Nhận được lệnh !ping từ {ctx.author.name}. Đang trả lời...")
-    await ctx.send("Pong!")
-# <<< KẾT THÚC LỆNH KIỂM TRA >>>
+def process_karuta_drop(msg):
+    """Hàm xử lý logic khi phát hiện drop, được gọi trong một luồng riêng."""
+    embed = msg['embeds'][0]
+    character_names = []
 
-@bot.event
-async def on_ready():
-    print(f'✅ Bot Discord đã đăng nhập với tên {bot.user}')
+    print(f"🔎 Phát hiện drop từ Karuta. Bắt đầu xử lý...")
 
-@bot.event
-async def on_message(message):
-    # Xử lý lệnh trước khi xử lý tin nhắn thường
-    await bot.process_commands(message)
+    if embed.get('image', {}).get('url'):
+        print("  -> Đây là Drop dạng Ảnh. Sử dụng OCR...")
+        character_names = get_names_from_image(embed['image']['url'])
+    elif embed.get('fields'):
+        print("  -> Đây là Drop dạng Chữ/Embed. Đọc dữ liệu fields...")
+        character_names = get_names_from_embed_fields(embed)
 
-    # Bỏ qua tin nhắn từ chính bot
-    if message.author == bot.user:
-        return
+    while len(character_names) < 3:
+        character_names.append("")
 
-    if message.author.id == KARUTA_ID and "dropping" in message.content and message.embeds:
-        embed = message.embeds[0]
-        character_names = []
-        print(f"🔎 Phát hiện drop từ Karuta. Bắt đầu xử lý...")
+    print(f"  Nhận dạng các tên: {character_names}")
 
-        if embed.image and embed.image.url:
-            print("  -> Đây là Drop dạng Ảnh. Sử dụng OCR...")
-            character_names = get_names_from_image(embed.image.url)
-        elif embed.fields:
-            print("  -> Đây là Drop dạng Chữ/Embed. Đọc dữ liệu fields...")
-            character_names = get_names_from_embed_fields(embed)
+    reply_lines = []
+    for i in range(3):
+        name = character_names[i]
+        display_name = name if name else "Không đọc được"
+        lookup_name = name.lower().strip() if name else ""
+        
+        if lookup_name and lookup_name not in HEART_DATABASE:
+            log_new_character(name)
+        
+        heart_value = HEART_DATABASE.get(lookup_name, 0)
+        heart_display = f"{heart_value:,}" if heart_value > 0 else "N/A"
+        
+        reply_lines.append(f"{i+1} | ♡**{heart_display}** · `{display_name}`")
 
-        while len(character_names) < 3:
-            character_names.append("")
+    reply_content = "\n".join(reply_lines)
+    bot.reply(msg['channel_id'], msg['id'], reply_content)
+    print("✅ Đã gửi phản hồi thành công.")
 
-        print(f"  Nhận dạng các tên: {character_names}")
+@bot.gateway.command
+def on_message(resp):
+    if resp.event.message:
+        msg = resp.parsed.auto()
 
-        async with message.channel.typing():
-            reply_lines = []
-            for i in range(3):
-                name = character_names[i]
-                display_name = name if name else "Không đọc được"
-                lookup_name = name.lower().strip() if name else ""
-                
-                if lookup_name and lookup_name not in HEART_DATABASE:
-                    log_new_character(name)
-                
-                heart_value = HEART_DATABASE.get(lookup_name, 0)
-                heart_display = f"{heart_value:,}" if heart_value > 0 else "N/A"
-                
-                reply_lines.append(f"{i+1} | ♡**{heart_display}** · `{display_name}`")
+        # Lệnh kiểm tra !ping
+        if msg['content'] == '!ping':
+            print(f"✅ Nhận được lệnh !ping từ {msg['author']['username']}. Đang trả lời...")
+            bot.sendMessage(msg['channel_id'], "Pong!")
+            return
 
-            reply_content = "\n".join(reply_lines)
-            await message.reply(reply_content)
-            print("✅ Đã gửi phản hồi thành công.")
+        # Logic xử lý drop
+        author_id = msg.get('author', {}).get('id')
+        content = msg.get('content', '')
+        embeds = msg.get('embeds')
 
-# --- PHẦN 3: KHỞI ĐỘNG BOT VÀ WEB SERVER ---
+        if author_id == KARUTA_ID and "dropping" in content and embeds:
+            # Chạy xử lý trong một luồng riêng để không làm nghẽn gateway
+            threading.Thread(target=process_karuta_drop, args=(msg,)).start()
+
+@bot.gateway.command
+def on_ready(resp):
+    if resp.event.ready:
+        user = resp.parsed.auto()['user']
+        print(f"✅ Đăng nhập thành công với tài khoản: {user['username']}#{user['discriminator']}")
+        print('Bot đã sẵn sàng quét drop của Karuta!')
+
+# --- PHẦN 3: KHỞI ĐỘNG BOT ---
 if __name__ == "__main__":
     if TOKEN:
-        bot_thread = threading.Thread(target=bot.run, args=(TOKEN,))
-        bot_thread.start()
-        print("🚀 Khởi động Web Server...")
-        run_web_server()
+        bot.gateway.run(auto_reconnect=True)
     else:
         print("LỖI: Không tìm thấy DISCORD_TOKEN trong tệp .env.")
