@@ -104,7 +104,6 @@ def get_names_from_image_upgraded(image_bytes):
         # Cấu hình Tesseract OCR:
         # --psm 6: Assume a single uniform block of text.
         # --oem 3: Use both Legacy and LSTM OCR engine.
-        # Bỏ 'tessedit_char_whitelist' để Tesseract tự do nhận diện mọi ký tự, sau đó hậu xử lý.
         custom_config = r'--psm 6 --oem 3' 
 
         for i in range(3):
@@ -117,35 +116,46 @@ def get_names_from_image_upgraded(image_bytes):
             # Tiền xử lý ảnh nâng cao:
             name_img = name_img.convert('L') # 1. Chuyển sang ảnh xám
             
-            # 2. Tăng độ tương phản mạnh hơn
+            # 2. Giảm độ tương phản một chút để tránh mất chi tiết
             enhancer = ImageEnhance.Contrast(name_img)
-            name_img = enhancer.enhance(2.5) # Tăng từ 2.0 lên 2.5
+            name_img = enhancer.enhance(1.8) # Giảm từ 2.5 xuống 1.8
 
-            # 3. Làm sắc nét mạnh hơn
+            # 3. Làm sắc nét 2 lần
             name_img = name_img.filter(ImageFilter.SHARPEN)
-            name_img = name_img.filter(ImageFilter.SHARPEN) # Áp dụng làm sắc nét 2 lần
+            name_img = name_img.filter(ImageFilter.SHARPEN)
 
-            # 4. Nhị phân hóa:
-            # Đảo màu để chữ đen trên nền trắng (thường hiệu quả hơn cho Tesseract)
-            name_img = ImageOps.invert(name_img) 
-            # Áp dụng ngưỡng để biến pixel thành đen hoặc trắng. Thử ngưỡng động nếu cần.
-            # Với ngưỡng cố định, 128 là giá trị trung bình, có thể thử tinh chỉnh nếu chữ quá mờ hoặc quá đậm.
-            name_img = name_img.point(lambda x: 0 if x < 128 else 255) 
+            # 4. Nhị phân hóa thích ứng (Adaptive Binarization):
+            # Với ảnh PIL, chúng ta cần tự triển khai logic này nếu muốn chi tiết hơn.
+            # Với Tesseract, đôi khi việc dùng 'L' (grayscale) kết hợp contrast/sharpen đã đủ.
+            # Hoặc thử nhị phân hóa với ngưỡng động nếu có thư viện hỗ trợ.
+            # Hiện tại, tôi sẽ giữ ngưỡng cố định nhưng có thể điều chỉnh sau nếu cần.
+            name_img = ImageOps.invert(name_img) # Chữ đen trên nền trắng
+            name_img = name_img.point(lambda x: 0 if x < 135 else 255) # Tăng ngưỡng một chút để bắt các pixel sáng hơn
             
-            # Nếu tên vẫn khó đọc, có thể thử một ngưỡng khác, ví dụ 100 hoặc 150
-            # name_img = name_img.point(lambda x: 0 if x < 100 else 255) 
+            # 5. Mở rộng (Dilation) và co lại (Erosion) - morphology operations
+            # Đôi khi có thể giúp lấp đầy khoảng trống trong chữ hoặc loại bỏ nhiễu
+            # name_img = name_img.filter(ImageFilter.MinFilter(3)) # Erosion
+            # name_img = name_img.filter(ImageFilter.MaxFilter(3)) # Dilation
+
 
             text = pytesseract.image_to_string(name_img, config=custom_config)
             
             # Hậu xử lý tên:
-            # Loại bỏ ký tự xuống dòng và khoảng trắng thừa
-            cleaned_name = text.strip().replace("\n", " ") 
+            cleaned_name = text.strip().replace("\n", " ").replace(" ", " ") # Chuẩn hóa khoảng trắng
             
-            # Lọc bỏ các ký tự không phải chữ cái, số, hoặc khoảng trắng
-            # Điều này giúp loại bỏ các ký tự rác nếu bỏ whitelist trong custom_config
+            # Loại bỏ các ký tự không phải chữ cái (a-z, A-Z), số (0-9), hoặc khoảng trắng
             cleaned_name = re.sub(r'[^a-zA-Z0-9\s]', '', cleaned_name)
             
-            # Đảm bảo tên không quá ngắn hoặc chỉ toàn khoảng trắng sau khi lọc
+            # Thêm một bước làm sạch nữa: loại bỏ các chuỗi ký tự đơn lẻ hoặc rất ngắn
+            # thường là nhiễu nếu đứng một mình
+            words = cleaned_name.split()
+            filtered_words = [word for word in words if len(word) > 1 or word.lower() in ['a', 'i', 'o']] # Giữ lại 'a', 'i', 'o'
+            cleaned_name = " ".join(filtered_words)
+
+            # Xử lý các trường hợp đặc biệt thường bị đọc sai
+            cleaned_name = cleaned_name.replace("Miog", "Mio") # Ví dụ nếu "Mio" bị đọc thành "Miog"
+
+
             if len(cleaned_name) > 1 and not all(char.isspace() for char in cleaned_name):
                 extracted_names.append(cleaned_name)
             else:
