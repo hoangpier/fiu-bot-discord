@@ -1,4 +1,4 @@
-# main.py (Phiên bản Nâng Cấp - Trình đọc ảnh chính xác cao)
+# main.py (Phiên bản Nâng Cấp - Trình đọc ảnh chính xác cao với Gemini API)
 
 import discord
 from discord.ext import commands
@@ -6,12 +6,13 @@ import os
 import re
 import requests
 import io
-import pytesseract
+import pytesseract # Vẫn giữ lại cho cấu hình Tesseract ban đầu, nhưng sẽ không được dùng trực tiếp cho OCR nữa
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from dotenv import load_dotenv
 import threading
 from flask import Flask
 import asyncio
+import base64 # Thêm thư viện base64 để mã hóa ảnh
 
 # --- PHẦN 1: CẤU HÌNH WEB SERVER ---
 app = Flask(__name__)
@@ -82,87 +83,93 @@ def log_new_character(character_name):
     except Exception as e:
         print(f"Lỗi khi đang lưu nhân vật mới: {e}")
 
-def get_names_from_image_upgraded(image_bytes):
+async def get_names_from_image_via_gemini_api(image_bytes):
     """
-    Hàm đọc ảnh được nâng cấp với kỹ thuật cắt ảnh chính xác và tiền xử lý ảnh
-    cải tiến để tăng độ chính xác của OCR.
+    Sử dụng Gemini API để nhận diện tên nhân vật từ ảnh.
+    Trả về danh sách tên nhân vật.
     """
     try:
-        main_image = Image.open(io.BytesIO(image_bytes))
-        width, height = main_image.size
+        # Mã hóa ảnh sang Base64
+        base64_image = base64.b64encode(image_bytes).decode('utf-8')
 
-        if not (width > 800 and height > 200):
-            print(f"  [LOG] Kích thước ảnh không giống ảnh drop Karuta: {width}x{height}. Bỏ qua.")
-            return []
+        # Định nghĩa prompt để hỏi AI về tên nhân vật
+        prompt = "Từ hình ảnh thẻ bài Karuta này, hãy trích xuất và liệt kê tên các nhân vật theo thứ tự từ trái sang phải. Nếu có thể, hãy ghi cả tên của người cha của Tsukasa nếu không phải chỉ là 'Tsukasa's Father'. Chỉ trả về tên, mỗi tên trên một dòng."
 
-        card_width = 278
-        card_height = 248
-        x_coords = [0, 279, 558] 
-
-        extracted_names = []
+        # Cấu trúc payload cho Gemini API
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inlineData": {
+                                "mimeType": "image/webp", # MIME type của ảnh drop Karuta thường là webp
+                                "data": base64_image
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
         
-        # Cấu hình Tesseract OCR:
-        # --psm 7: Treat the image as a single text line. Rất phù hợp với vùng tên đã được cắt.
-        # --oem 3: Sử dụng cả công cụ OCR cũ và mới.
-        custom_config = r'--psm 7 --oem 3' 
+        # Cấu hình API key và URL
+        # API key sẽ được Canvas cung cấp tự động khi để trống
+        apiKey = "" 
+        apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=" + apiKey
 
-        for i in range(3):
-            card_box = (x_coords[i], 0, x_coords[i] + card_width, card_height)
-            card_img = main_image.crop(card_box)
+        print("  [API] Đang gửi ảnh đến Gemini API để nhận dạng...")
+        
+        # Gửi yêu cầu đến Gemini API
+        # Sử dụng requests.post thay vì fetch trong Python
+        response = requests.post(apiUrl, headers={'Content-Type': 'application/json'}, json=payload)
+        response.raise_for_status() # Báo lỗi nếu có lỗi HTTP
 
-            # Điều chỉnh tọa độ cắt vùng tên nhân vật theo docanh.py
-            name_box = (15, 15, card_width - 15, 50) # Chiều cao vùng cắt tên là 50 (từ y=15 đến y=50)
-            name_img = card_img.crop(name_box)
-
-            # Tiền xử lý ảnh đơn giản hóa: chỉ chuyển sang xám, tăng tương phản và làm sắc nét
-            name_img = name_img.convert('L') # 1. Chuyển sang ảnh xám
+        result = response.json()
+        
+        # Phân tích phản hồi từ API
+        if result and result.get('candidates') and result['candidates'][0].get('content') and result['candidates'][0]['content'].get('parts'):
+            # Lấy văn bản phản hồi từ AI
+            api_text = result['candidates'][0]['content']['parts'][0]['text']
             
-            # 2. Tăng độ tương phản (có thể thử các giá trị khác như 2.0, 2.5)
-            enhancer = ImageEnhance.Contrast(name_img)
-            name_img = enhancer.enhance(2.0) # Quay lại mức tương phản 2.0
-
-            # 3. Làm sắc nét 2 lần
-            name_img = name_img.filter(ImageFilter.SHARPEN)
-            name_img = name_img.filter(ImageFilter.SHARPEN)
+            # Tách tên nhân vật từ phản hồi (mỗi tên trên một dòng)
+            names = [name.strip() for name in api_text.split('\n') if name.strip()]
             
-            # Gỡ bỏ các bước đảo màu và nhị phân hóa cứng nhắc, để Tesseract xử lý ảnh xám đã làm rõ.
-            # >>>>> DÒNG DEBUG MỚI ĐƯỢC THÊM VÀO ĐÂY <<<<<
-            # Đảm bảo thư mục 'debug_images' tồn tại
-            os.makedirs("debug_images", exist_ok=True)
-            name_img.save(f"debug_images/debug_card_name_{i}.png") # Lưu ảnh sau tiền xử lý để kiểm tra
-            print(f"  [DEBUG] Đã lưu ảnh thẻ {i} sau tiền xử lý tại debug_images/debug_card_name_{i}.png")
-            # >>>>> KẾT THÚC DÒNG DEBUG <<<<<
+            # Hậu xử lý nhỏ (có thể thêm nhiều quy tắc nếu AI vẫn trả về sai)
+            processed_names = []
+            for name in names:
+                # Loại bỏ các ký tự không phải chữ cái, số, khoảng trắng, ', -, .
+                cleaned = re.sub(r'[^a-zA-Z0-9\s\'-.]', '', name)
+                # Xử lý khoảng trắng thừa
+                cleaned = ' '.join(cleaned.split())
+                # Chuyển đổi tên để xử lý một số lỗi phổ biến nếu có
+                # Ví dụ: nếu AI trả về "Tsukasa's Father" mà bạn muốn "Tsukasa no Chichi"
+                # if cleaned == "Tsukasa's Father":
+                #     cleaned = "Tsukasa no Chichi"
+                processed_names.append(cleaned)
 
+            print(f"  [API] Nhận dạng từ Gemini API: {processed_names}")
+            return processed_names
+        else:
+            print("  [API] Phản hồi từ Gemini API không chứa dữ liệu hợp lệ.")
+            return ["Không đọc được (API)", "Không đọc được (API)", "Không đọc được (API)"]
 
-            text = pytesseract.image_to_string(name_img, config=custom_config)
-            
-            # Hậu xử lý tên:
-            cleaned_name = text.strip().replace("\n", " ").replace(" ", " ") # Chuẩn hóa khoảng trắng
-            
-            # Loại bỏ các ký tự không phải chữ cái (a-z, A-Z), số (0-9), khoảng trắng, dấu nháy đơn hoặc dấu gạch nối
-            cleaned_name = re.sub(r'[^a-zA-Z0-9\s\'-]', '', cleaned_name) # Cho phép cả dấu nháy đơn ' và dấu gạch nối -
-            
-            # Thêm một bước làm sạch nữa: loại bỏ các chuỗi ký tự đơn lẻ hoặc rất ngắn
-            # thường là nhiễu nếu đứng một mình
-            words = cleaned_name.split()
-            filtered_words = [word for word in words if len(word) > 1 or word.lower() in ['a', 'i', 'o', 'of', 'the', 's', 'ii']] # Giữ lại các từ ngắn có nghĩa phổ biến và 'ii'
-            cleaned_name = " ".join(filtered_words)
-
-            # Xử lý các trường hợp đặc biệt thường bị đọc sai (có thể bổ sung thêm khi gặp lỗi mới)
-            cleaned_name = cleaned_name.replace("Miog", "Mio")
-            # Ví dụ: nếu "Genocide" bị đọc sai (ví dụ Genocde), có thể thêm:
-            # cleaned_name = cleaned_name.replace("Genocde", "Genocide")
-
-
-            if len(cleaned_name) > 1 and not all(char.isspace() for char in cleaned_name):
-                extracted_names.append(cleaned_name)
-            else:
-                extracted_names.append("Không đọc được")
-
-        return extracted_names
+    except requests.exceptions.RequestException as e:
+        print(f"  [LỖI API] Lỗi khi gọi Gemini API: {e}")
+        return ["Lỗi API (Thẻ 1)", "Lỗi API (Thẻ 2)", "Lỗi API (Thẻ 3)"]
     except Exception as e:
-        print(f"  [LỖI] Xảy ra lỗi trong quá trình xử lý ảnh: {e}")
-        return ["Lỗi OCR (Thẻ 1)", "Lỗi OCR (Thẻ 2)", "Lỗi OCR (Thẻ 3)"]
+        print(f"  [LỖI API] Đã xảy ra lỗi không xác định khi xử lý API: {e}")
+        return ["Lỗi API (Thẻ 1)", "Lỗi API (Thẻ 2)", "Lỗi API (Thẻ 3)"]
+
+
+def get_names_from_image_upgraded(image_bytes):
+    """
+    Hàm đọc ảnh được nâng cấp.
+    Đã được thay đổi để sử dụng Gemini API thay vì Tesseract cục bộ.
+    """
+    # Gọi hàm sử dụng Gemini API
+    return asyncio.run(get_names_from_image_via_gemini_api(image_bytes))
+
 
 # --- PHẦN CHÍNH CỦA BOT ---
 intents = discord.Intents.default()
@@ -178,7 +185,7 @@ async def ping(ctx):
 async def on_ready():
     """Sự kiện khi bot đã đăng nhập thành công vào Discord."""
     print(f'✅ Bot Discord đã đăng nhập với tên {bot.user}')
-    print('Bot đang chạy với trình đọc ảnh nâng cấp.')
+    print('Bot đang chạy với trình đọc ảnh nâng cấp (sử dụng Gemini API).')
 
 @bot.event
 async def on_message(message):
@@ -205,14 +212,15 @@ async def on_message(message):
         response.raise_for_status()
         image_bytes = response.content
 
+        # Gọi hàm xử lý ảnh nâng cấp (hiện tại sử dụng Gemini API)
         character_names = get_names_from_image_upgraded(image_bytes)
         
         print(f"  -> Kết quả nhận dạng tên: {character_names}")
 
-        if not character_names or all(name == "Không đọc được" or name.startswith("Lỗi OCR") for name in character_names):
+        if not character_names or all(name == "Không đọc được" or name.startswith("Lỗi OCR") or name.startswith("Lỗi API") for name in character_names):
             print("  -> Không nhận dạng được tên nào hoặc có lỗi nhận dạng. Bỏ qua.")
             print("="*40 + "\n")
-            if all(name == "Không đọc được" or name.startswith("Lỗi OCR") for name in character_names):
+            if all(name == "Không đọc được" or name.startswith("Lỗi OCR") or name.startswith("Lỗi API") for name in character_names):
                  await message.reply("Xin lỗi, tôi không thể đọc được tên nhân vật từ ảnh này. Vui lòng thử lại với ảnh rõ hơn hoặc báo cáo lỗi nếu vấn đề tiếp diễn.")
             return
 
@@ -221,8 +229,8 @@ async def on_message(message):
 
             reply_lines = []
             for i, name in enumerate(character_names):
-                display_name = name if name and not name.startswith("Lỗi OCR") else "Không đọc được"
-                lookup_name = name.lower().strip() if name and not name.startswith("Lỗi OCR") else ""
+                display_name = name if name and not name.startswith("Lỗi OCR") and not name.startswith("Lỗi API") else "Không đọc được"
+                lookup_name = name.lower().strip() if name and not name.startswith("Lỗi OCR") and not name.startswith("Lỗi API") else ""
                 
                 if lookup_name and lookup_name not in HEART_DATABASE and lookup_name != "không đọc được":
                     log_new_character(name)
@@ -251,6 +259,9 @@ if __name__ == "__main__":
     # Lưu ý: Nếu Tesseract không nằm trong PATH, bạn cần thêm dòng sau:
     # pytesseract.pytesseract.tesseract_cmd = r'C:\\Program Files\\Tesseract-OCR\\tesseract.exe'
     # hoặc đường dẫn đến file tesseract.exe trên hệ thống của bạn.
+    
+    # Do hiện tại đang dùng Gemini API, nên Tesseract.pytesseract.tesseract_cmd không còn cần thiết
+    # trừ khi bạn muốn fallback về Tesseract khi API lỗi.
 
     if TOKEN:
         bot_thread = threading.Thread(target=bot.run, args=(TOKEN,))
