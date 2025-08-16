@@ -4,3 +4,5 @@ pytesseract
 Pillow
 requests
 Flask
+waitress
+
