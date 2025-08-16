@@ -126,7 +126,13 @@ def get_names_from_image_upgraded(image_bytes):
             name_img = name_img.filter(ImageFilter.SHARPEN)
             
             # Gỡ bỏ các bước đảo màu và nhị phân hóa cứng nhắc, để Tesseract xử lý ảnh xám đã làm rõ.
-            # (Bạn có thể thêm name_img.save(f"debug_card_{i}.png") tại đây để kiểm tra ảnh trước khi OCR)
+            # >>>>> DÒNG DEBUG MỚI ĐƯỢC THÊM VÀO ĐÂY <<<<<
+            # Đảm bảo thư mục 'debug_images' tồn tại
+            os.makedirs("debug_images", exist_ok=True)
+            name_img.save(f"debug_images/debug_card_name_{i}.png") # Lưu ảnh sau tiền xử lý để kiểm tra
+            print(f"  [DEBUG] Đã lưu ảnh thẻ {i} sau tiền xử lý tại debug_images/debug_card_name_{i}.png")
+            # >>>>> KẾT THÚC DÒNG DEBUG <<<<<
+
 
             text = pytesseract.image_to_string(name_img, config=custom_config)
             
