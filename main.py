@@ -1,95 +1,156 @@
-import discum
-import threading
-import time
+# main.py
+import discord
+from discord.ext import commands
 import os
-from keep_alive import keep_alive
+import re
+import requests
+import io
+import pytesseract
+from PIL import Image, ImageEnhance, ImageFilter
+from dotenv import load_dotenv
 
-accounts = [
-    {"token": os.getenv("TOKEN1"), "channel_id": os.getenv("CHANNEL_ID")},
-    {"token": os.getenv("TOKEN2"), "channel_id": os.getenv("CHANNEL_ID")},
-    {"token": os.getenv("TOKEN3"), "channel_id": os.getenv("CHANNEL_ID")},
-    {"token": os.getenv("TOKEN4"), "channel_id": os.getenv("CHANNEL_ID")},
-    {"token": os.getenv("TOKEN5"), "channel_id": os.getenv("CHANNEL_ID")},
-    {"token": os.getenv("TOKEN6"), "channel_id": os.getenv("CHANNEL_ID")},
-]
+# --- CẤU HÌNH BAN ĐẦU ---
+load_dotenv()
+TOKEN = os.getenv('DISCORD_TOKEN')
+KARUTA_ID = 646937666251915264
 
-karuta_id = "646937666251915264"
-ktb_channel_id = os.getenv("KTB_CHANNEL_ID")
-fixed_emojis = ["1️⃣", "2️⃣", "3️⃣", "1️⃣", "2️⃣", "3️⃣"]
+# --- HÀM TẢI VÀ XỬ LÝ DỮ LIỆU TIM ---
 
-bots = []
-
-def create_bot(account, emoji, grab_time):
-    bot = discum.Client(token=account["token"], log=False)
-
-    @bot.gateway.command
-    def on_ready(resp):
-        if resp.event.ready:
-            try:
-                user_id = resp.raw["user"]["id"]
-                print(f"[{account['channel_id']}] → Đăng nhập với user_id: {user_id}")
-            except Exception as e:
-                print(f"Lỗi lấy user_id từ ready: {e}")
-
-    @bot.gateway.command
-    def on_message(resp):
-        if resp.event.message:
-            msg = resp.parsed.auto()
-            author = msg.get("author", {}).get("id")
-            content = msg.get("content", "")
-            if author == karuta_id and "is dropping 3 cards!" in content:
-                if msg.get("channel_id") == str(account["channel_id"]):
-                    threading.Thread(target=react_and_message, args=(bot, msg, emoji, grab_time, account)).start()
-
-    bots.append(bot)
-    threading.Thread(target=run_bot, args=(bot, account), daemon=True).start()
-
-def react_and_message(bot, msg, emoji, grab_time, account):
-    time.sleep(grab_time)
+def load_heart_data(file_path):
+    """
+    Tải dữ liệu từ file txt và chuyển thành một dictionary để tra cứu.
+    Key: tên nhân vật (viết thường), Value: số tim (dạng số nguyên).
+    """
+    heart_db = {}
     try:
-        bot.addReaction(msg["channel_id"], msg["id"], emoji)
-        print(f"[{account['channel_id']}] → Thả reaction {emoji}")
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                # Dùng regex để trích xuất tim và tên một cách chính xác
+                match = re.search(r'♡([\d,]+)\s·\s(?:.*?)\s·\s(.+)', line)
+                if match:
+                    # Lấy số tim, loại bỏ dấu phẩy và chuyển thành số
+                    heart_str = match.group(1).replace(',', '')
+                    hearts = int(heart_str)
+                    
+                    # Lấy tên, chuyển thành chữ thường và xóa khoảng trắng thừa
+                    name = match.group(2).lower().strip()
+                    
+                    heart_db[name] = hearts
+    except FileNotFoundError:
+        print(f"LỖI: Không tìm thấy tệp dữ liệu '{file_path}'. Vui lòng đảm bảo tệp này tồn tại.")
     except Exception as e:
-        print(f"[{account['channel_id']}] → Lỗi thả reaction: {e}")
-        time.sleep(2)
+        print(f"Lỗi khi đọc tệp dữ liệu: {e}")
+        
+    print(f"Đã tải thành công {len(heart_db)} nhân vật vào cơ sở dữ liệu.")
+    return heart_db
+
+# Tải dữ liệu ngay khi bot khởi động
+HEART_DATABASE = load_heart_data("tennhanvatvasotim.txt")
+
+# --- HÀM XỬ LÝ ẢNH VÀ OCR ---
+
+def preprocess_image_for_ocr(image_obj):
+    """Tiền xử lý ảnh để tăng độ chính xác cho OCR."""
+    img = image_obj.convert('L')  # Chuyển sang ảnh xám
+    enhancer = ImageEnhance.Contrast(img)
+    img = enhancer.enhance(2.0) # Tăng độ tương phản
+    return img
+
+def get_names_from_drop_image(image_url):
+    """
+    Sử dụng OCR để đọc tên 3 nhân vật từ ảnh drop của Karuta.
+    """
     try:
-        bot.sendMessage(ktb_channel_id, "kt b")
-        print(f"[{account['channel_id']}] → Nhắn 'kt b' ở kênh riêng")
+        response = requests.get(image_url)
+        if response.status_code != 200:
+            return []
+
+        main_image = Image.open(io.BytesIO(response.content))
+        img_width, img_height = main_image.size
+        card_width = img_width // 3
+        
+        extracted_names = []
+
+        for i in range(3):
+            # Cắt riêng ảnh của từng thẻ
+            left = i * card_width
+            right = (i + 1) * card_width
+            card_image = main_image.crop((left, 0, right, img_height))
+
+            # Cắt vùng chứa tên nhân vật (phần trên cùng của thẻ)
+            # Tọa độ này được ước tính và có thể cần điều chỉnh
+            name_region = card_image.crop((20, 30, card_width - 40, 100))
+            
+            processed_region = preprocess_image_for_ocr(name_region)
+            
+            # Đọc văn bản từ ảnh
+            custom_config = r'--oem 3 --psm 6'
+            text = pytesseract.image_to_string(processed_region, config=custom_config)
+            
+            # Dọn dẹp tên: xóa các ký tự thừa và chỉ lấy dòng đầu tiên
+            cleaned_name = text.split('\n')[0].strip()
+            extracted_names.append(cleaned_name)
+            
+        return extracted_names
     except Exception as e:
-        print(f"[{account['channel_id']}] → Lỗi nhắn kt b: {e}")
+        print(f"Lỗi trong quá trình xử lý ảnh: {e}")
+        return []
 
-def run_bot(bot, account):
-    while True:
-        try:
-            bot.gateway.run(auto_reconnect=True)
-        except Exception as e:
-            print(f"[{account['channel_id']}] → Bot lỗi, thử kết nối lại: {e}")
-        time.sleep(5)
+# --- THIẾT LẬP BOT DISCORD ---
 
-def drop_loop():
-    acc_count = len(accounts)
-    i = 0
-    while True:
-        acc = accounts[i % acc_count]
-        try:
-            bots[i % acc_count].sendMessage(str(acc["channel_id"]), "kd")
-            print(f"[{acc['channel_id']}] → Gửi lệnh k!d từ acc thứ {i % acc_count + 1}")
-        except Exception as e:
-            print(f"[{acc['channel_id']}] → Drop lỗi: {e}")
-        i += 1
-        time.sleep(305)
+# Cần bật Message Content Intent trên Developer Portal
+intents = discord.Intents.default()
+intents.message_content = True
 
-keep_alive()
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Gán thời gian grab cho từng acc
-grab_times = [1.3, 2.3, 3.2, 1.3, 2.3, 3.2]
+@bot.event
+async def on_ready():
+    print(f'Đăng nhập thành công với tên {bot.user}')
+    print('Bot đã sẵn sàng quét drop của Karuta!')
 
-for i, acc in enumerate(accounts):
-    emoji = fixed_emojis[i % len(fixed_emojis)]
-    grab_time = grab_times[i]
-    create_bot(acc, emoji, grab_time)
+@bot.event
+async def on_message(message):
+    # Bỏ qua tin nhắn từ chính bot
+    if message.author == bot.user:
+        return
 
-threading.Thread(target=drop_loop, daemon=True).start()
+    # Chỉ xử lý tin nhắn từ Karuta
+    if message.author.id == KARUTA_ID:
+        # Kiểm tra xem có phải là tin nhắn drop và có chứa ảnh không
+        if message.embeds and "I'm dropping 3 cards since this server is currently active!" in message.content:
+            embed = message.embeds[0]
+            if embed.image and embed.image.url:
+                print(f"Phát hiện drop từ Karuta trong kênh {message.channel.name}. Bắt đầu xử lý ảnh...")
 
-while True:
-    time.sleep(60)
+                async with message.channel.typing():
+                    # Lấy tên nhân vật từ ảnh
+                    character_names = get_names_from_drop_image(embed.image.url)
+
+                    if not character_names or len(character_names) != 3:
+                        print("Không thể đọc đủ 3 tên nhân vật từ ảnh.")
+                        return
+
+                    print(f"Đã nhận dạng các tên: {character_names}")
+
+                    # Chuẩn bị nội dung phản hồi
+                    reply_lines = []
+                    for i, name in enumerate(character_names):
+                        # Tra cứu tên trong database
+                        lookup_name = name.lower().strip()
+                        heart_value = HEART_DATABASE.get(lookup_name, 0) # Mặc định là 0 nếu không tìm thấy
+                        
+                        # Định dạng số tim cho dễ đọc
+                        heart_display = f"{heart_value:,}" if heart_value > 0 else "N/A"
+                        
+                        reply_lines.append(f"{i+1} | ♡**{heart_display}** · `{name}`")
+
+                    reply_content = "\n".join(reply_lines)
+                    await message.reply(reply_content)
+                    print("Đã gửi phản hồi thành công.")
+
+# Chạy bot
+if TOKEN:
+    bot.run(TOKEN)
+else:
+    print("LỖI: Không tìm thấy DISCORD_TOKEN trong tệp .env")
