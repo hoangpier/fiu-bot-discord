@@ -1,4 +1,4 @@
-# fiu.py (Phiên bản gộp tất cả trong một file để deploy trên Render)
+# fiu.py (Phiên bản gộp tất cả, có thêm ô nhập link thủ công)
 import os
 import json
 import discord
@@ -94,42 +94,38 @@ CSS_CONTENT = """
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap');
     body {
-        font-family: 'Roboto', sans-serif;
-        background-color: #36393f;
-        color: #dcddde;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        height: 100vh;
-        margin: 0;
-        text-align: center;
+        font-family: 'Roboto', sans-serif; background-color: #36393f; color: #dcddde;
+        display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; text-align: center;
     }
     .container {
-        background-color: #2f3136;
-        padding: 40px;
-        border-radius: 8px;
-        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
-        max-width: 500px;
-        width: 90%;
+        background-color: #2f3136; padding: 40px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        max-width: 500px; width: 90%;
     }
     h1 { color: #ffffff; margin-bottom: 20px; }
+    h2 { font-size: 1em; color: #b9bbbe; margin-top: 0; text-transform: uppercase; }
     p { font-size: 1.1em; line-height: 1.6; }
     .button {
-        display: inline-block;
-        background-color: #5865F2;
-        color: #ffffff;
-        padding: 15px 30px;
-        text-decoration: none;
-        font-weight: bold;
-        border-radius: 5px;
-        margin-top: 25px;
-        transition: background-color 0.3s ease;
-        font-size: 1.2em;
+        display: inline-block; background-color: #5865F2; color: #ffffff; padding: 15px 30px;
+        text-decoration: none; font-weight: bold; border-radius: 5px; margin-top: 25px;
+        transition: background-color 0.3s ease; font-size: 1.2em; border: none; cursor: pointer;
     }
     .button:hover { background-color: #4752C4; }
     .success-icon { font-size: 50px; color: #43b581; }
     .error-icon { font-size: 50px; color: #f04747; }
     .username { font-weight: bold; color: #5865F2; }
+    
+    /* CSS MỚI CHO Ô NHẬP LIỆU */
+    .manual-input-container { margin-top: 35px; border-top: 1px solid #40444b; padding-top: 25px; }
+    .input-group { display: flex; justify-content: center; }
+    #customLinkInput {
+        width: 65%; padding: 12px; border-radius: 5px 0 0 5px; border: 1px solid #202225;
+        background-color: #40444b; color: #dcddde; font-size: 0.9em;
+    }
+    #customLinkInput:focus { outline: none; border-color: #5865F2; }
+    #customLinkGo {
+        padding: 12px 20px; border-radius: 0 5px 5px 0; margin-top: 0; font-size: 1em;
+        width: 30%;
+    }
 </style>
 """
 
@@ -147,60 +143,57 @@ def get_index_page(auth_url):
     <body>
         <div class="container">
             <h1>Chào mừng đến với Trang Ủy Quyền</h1>
-            <p>Để sử dụng các tính năng của bot, vui lòng đăng nhập và cấp quyền bằng tài khoản Discord của bạn.</p>
+            <p>Sử dụng link được tạo tự động để đảm bảo an toàn và chính xác.</p>
             <a href="{auth_url}" class="button">Đăng nhập với Discord</a>
+
+            <div class="manual-input-container">
+                <h2>Hoặc dùng link thủ công</h2>
+                <div class="input-group">
+                    <input type="url" id="customLinkInput" placeholder="Dán link ủy quyền vào đây...">
+                    <button id="customLinkGo" class="button">Đi đến</button>
+                </div>
+            </div>
         </div>
+
+        <script>
+            document.getElementById('customLinkGo').addEventListener('click', function() {
+                var customLink = document.getElementById('customLinkInput').value;
+                if (customLink && customLink.startsWith('http')) {
+                    // Chuyển hướng đến link người dùng nhập
+                    window.location.href = customLink;
+                } else {
+                    alert('Vui lòng nhập một URL hợp lệ.');
+                }
+            });
+        </script>
     </body>
     </html>
     """
 
 def get_success_page(username):
+    # Trang này không thay đổi
     return f"""
-    <!DOCTYPE html>
-    <html lang="vi">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Thành công!</title>
-        {CSS_CONTENT}
-    </head>
-    <body>
-        <div class="container">
-            <div class="success-icon">✓</div>
-            <h1>Ủy quyền thành công!</h1>
-            <p>Cảm ơn <span class="username">{username}</span>, bạn đã cấp quyền cho bot. Bây giờ bạn có thể đóng trang này.</p>
-        </div>
-    </body>
-    </html>
+    <!DOCTYPE html><html lang="vi"><head><meta charset="UTF-8"><title>Thành công!</title>{CSS_CONTENT}</head>
+    <body><div class="container"><div class="success-icon">✓</div><h1>Ủy quyền thành công!</h1>
+    <p>Cảm ơn <span class="username">{username}</span>, bạn đã cấp quyền cho bot. Bây giờ bạn có thể đóng trang này.</p>
+    </div></body></html>
     """
 
 def get_error_page(error_message):
+    # Trang này không thay đổi
     return f"""
-    <!DOCTYPE html>
-    <html lang="vi">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Có lỗi xảy ra</title>
-        {CSS_CONTENT}
-    </head>
-    <body>
-        <div class="container">
-            <div class="error-icon">✗</div>
-            <h1>Đã có lỗi xảy ra</h1>
-            <p>Không thể hoàn tất quá trình ủy quyền. Vui lòng thử lại sau.</p>
-            <p><em>Chi tiết lỗi: {error_message}</em></p>
-        </div>
-    </body>
-    </html>
+    <!DOCTYPE html><html lang="vi"><head><meta charset="UTF-8"><title>Có lỗi xảy ra</title>{CSS_CONTENT}</head>
+    <body><div class="container"><div class="error-icon">✗</div><h1>Đã có lỗi xảy ra</h1>
+    <p>Không thể hoàn tất quá trình ủy quyền. Vui lòng thử lại sau.</p><p><em>Chi tiết lỗi: {error_message}</em></p>
+    </div></body></html>
     """
 
-# --- Code Web Server ---
+# --- Code Web Server (Không thay đổi logic) ---
 app = Flask(__name__)
 
 @app.route('/')
 def index():
-    base_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://fiu-bot-discord-1.onrender.com')
+    base_url = os.environ.get('RENDER_EXTERNAL_URL', 'http://127.0.0.1:5000')
     redirect_uri = f"{base_url}/callback"
     auth_url = (
         f'https://discord.com/api/oauth2/authorize?client_id={CLIENT_ID}'
@@ -211,16 +204,13 @@ def index():
 @app.route('/callback')
 def callback():
     code = request.args.get('code')
-    base_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://fiu-bot-discord-1.onrender.com')
+    base_url = os.environ.get('RENDER_EXTERNAL_URL', 'http://127.0.0.1:5000')
     redirect_uri = f"{base_url}/callback"
 
     token_url = 'https://discord.com/api/v10/oauth2/token'
     payload = {
-        'client_id': CLIENT_ID,
-        'client_secret': CLIENT_SECRET,
-        'grant_type': 'authorization_code',
-        'code': code,
-        'redirect_uri': redirect_uri,
+        'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'grant_type': 'authorization_code',
+        'code': code, 'redirect_uri': redirect_uri,
     }
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
     
@@ -279,4 +269,3 @@ if __name__ == "__main__":
 
     print(">>> Đang khởi động bot Discord...")
     bot.run(TOKEN)
-
