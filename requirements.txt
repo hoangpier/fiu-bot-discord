@@ -3,5 +3,5 @@ python-dotenv
 requests
 Flask
 gunicorn
-Pillow
-pytesseract
+aiohttp
+
