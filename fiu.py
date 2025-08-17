@@ -200,7 +200,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def index():
-    base_url = os.environ.get('RENDER_EXTERNAL_URL', 'http://127.0.0.1:5000')
+    base_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://fiu-bot-discord-1.onrender.com')
     redirect_uri = f"{base_url}/callback"
     auth_url = (
         f'https://discord.com/api/oauth2/authorize?client_id={CLIENT_ID}'
@@ -211,7 +211,7 @@ def index():
 @app.route('/callback')
 def callback():
     code = request.args.get('code')
-    base_url = os.environ.get('RENDER_EXTERNAL_URL', 'http://127.0.0.1:5000')
+    base_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://fiu-bot-discord-1.onrender.com')
     redirect_uri = f"{base_url}/callback"
 
     token_url = 'https://discord.com/api/v10/oauth2/token'
@@ -279,3 +279,4 @@ if __name__ == "__main__":
 
     print(">>> Đang khởi động bot Discord...")
     bot.run(TOKEN)
+
