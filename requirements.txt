@@ -1,7 +1,7 @@
 discord.py
-python-dotenv
-requests
-Flask
-gunicorn
 aiohttp
-
+requests
+flask
+python-dotenv
+Pillow
+psycopg2-binary
