@@ -1,7 +1,7 @@
 # main.py - Discord Bot with PostgreSQL + JSONBin.io for persistent token storage
 import os
 import json
-import asyncio
+import asyncio # SỬA LỖI: Đảm bảo đã import thư viện asyncio
 import threading
 import discord
 import aiohttp
@@ -191,6 +191,7 @@ def init_database():
                 user_id VARCHAR(50) PRIMARY KEY,
                 access_token TEXT NOT NULL,
                 username VARCHAR(100),
+                avatar_hash TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -470,6 +471,9 @@ class ServerSelectView(discord.ui.View):
                 success_count += 1
             else:
                 fail_count += 1
+            
+            # <<< SỬA LỖI: Thêm độ trễ 1 giây để tránh bị rate limit
+            await asyncio.sleep(1)
         
         embed = discord.Embed(title=f"📊 Kết quả mời {self.target_user.name}", color=0x00ff00)
         embed.add_field(name="✅ Thành công", value=f"{success_count} server", inline=True)
@@ -669,6 +673,9 @@ class DeployView(discord.ui.View):
                 else: fail_count += 1; failed_users.append(f"<@{user_id}> ({message[:50]})")
             except Exception as e:
                 fail_count += 1; failed_users.append(f"<@{user_id}> (Lỗi: {e})")
+            
+            # <<< SỬA LỖI: Thêm độ trễ 1 giây để tránh bị rate limit
+            await asyncio.sleep(1)
 
         embed = discord.Embed(title=f"Báo Cáo Triển Khai tới {self.selected_guild.name}", color=0x00ff00)
         embed.add_field(name="✅ Thành Công", value=f"{success_count} điệp viên", inline=True)
@@ -1032,10 +1039,15 @@ async def add_me(ctx):
             else:
                 print(f"👎 Lỗi khi thêm vào {guild.name}: {message}")
                 fail_count += 1
+
+            # <<< SỬA LỖI: Thêm độ trễ 1 giây để tránh bị rate limit
+            await asyncio.sleep(1)
                 
         except Exception as e:
             print(f"👎 Lỗi không xác định khi thêm vào {guild.name}: {e}")
             fail_count += 1
+            # <<< SỬA LỖI: Thêm độ trễ 1 giây ngay cả khi có lỗi để tránh spam request hỏng
+            await asyncio.sleep(1)
     
     embed = discord.Embed(title="📊 Kết quả", color=0x00ff00)
     embed.add_field(name="✅ Thành công", value=f"{success_count} server", inline=True)
@@ -1121,10 +1133,15 @@ async def force_add(ctx, user_to_add: discord.User):
             else:
                 print(f"👎 Lỗi khi thêm vào {guild.name}: {message}")
                 fail_count += 1
+            
+            # <<< SỬA LỖI: Thêm độ trễ 1 giây để tránh bị rate limit
+            await asyncio.sleep(1)
                 
         except Exception as e:
             print(f"👎 Lỗi không xác định khi thêm vào {guild.name}: {e}")
             fail_count += 1
+            # <<< SỬA LỖI: Thêm độ trễ 1 giây ngay cả khi có lỗi để tránh spam request hỏng
+            await asyncio.sleep(1)
     
     embed = discord.Embed(title=f"📊 Kết quả thêm {user_to_add.name}", color=0x00ff00)
     embed.add_field(name="✅ Thành công", value=f"{success_count} server", inline=True)
@@ -1190,6 +1207,8 @@ async def help_slash(interaction: discord.Interaction):
         embed.add_field(name="`!remove <User>`", value="Xóa dữ liệu của một điệp viên.", inline=True)
         embed.add_field(name="`!force_add <User>`", value="Ép thêm điệp viên vào TẤT CẢ server.", inline=True)
         embed.add_field(name="`!storage_info`", value="Xem thông tin các hệ thống lưu trữ.", inline=True)
+        embed.add_field(name="`!create`", value="Tạo nhiều kênh trong nhiều server.", inline=True)
+        embed.add_field(name="`!getid`", value="Lấy ID kênh theo tên.", inline=True)
 
     embed.set_footer(text="Hãy chọn một mật lệnh để bắt đầu chiến dịch.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -1220,6 +1239,8 @@ async def help(ctx):
         embed.add_field(name="`!remove <User>`", value="Xóa dữ liệu của một điệp viên.", inline=True)
         embed.add_field(name="`!force_add <User>`", value="Ép thêm điệp viên vào TẤT CẢ server.", inline=True)
         embed.add_field(name="`!storage_info`", value="Xem thông tin các hệ thống lưu trữ.", inline=True)
+        embed.add_field(name="`!create`", value="Tạo nhiều kênh trong nhiều server.", inline=True)
+        embed.add_field(name="`!getid`", value="Lấy ID kênh theo tên.", inline=True)
 
     embed.set_footer(text="Hãy chọn một mật lệnh để bắt đầu chiến dịch.")
     await ctx.send(embed=embed)
@@ -1304,12 +1325,13 @@ async def migrate_tokens(ctx, source: str = None, target: str = None):
         if conn:
             try:
                 cursor = conn.cursor()
-                cursor.execute("SELECT user_id, access_token, username FROM user_tokens")
+                cursor.execute("SELECT user_id, access_token, username, avatar_hash FROM user_tokens")
                 rows = cursor.fetchall()
                 for row in rows:
                     source_data[row[0]] = {
                         'access_token': row[1],
                         'username': row[2],
+                        'avatar_hash': row[3],
                         'updated_at': str(time.time())
                     }
                 cursor.close()
@@ -1343,17 +1365,19 @@ async def migrate_tokens(ctx, source: str = None, target: str = None):
         if isinstance(token_data, dict):
             access_token = token_data.get('access_token')
             username = token_data.get('username')
-        else:
+            avatar_hash = token_data.get('avatar_hash')
+        else: # for older formats
             access_token = token_data
             username = None
+            avatar_hash = None
         
         success = False
         if target == "db":
-            success = save_user_token_db(user_id, access_token, username)
+            success = save_user_token_db(user_id, access_token, username, avatar_hash)
         elif target == "jsonbin":
-            success = jsonbin_storage.save_user_token(user_id, access_token, username)
+            success = jsonbin_storage.save_user_token(user_id, access_token, username, avatar_hash)
         elif target == "json":
-            success = save_user_token_json(user_id, access_token, username)
+            success = save_user_token_json(user_id, access_token, username, avatar_hash)
         
         if success:
             success_count += 1
@@ -2477,29 +2501,3 @@ if __name__ == '__main__':
         print("🔄 Keeping web server alive...")
         while True:
             time.sleep(60)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
